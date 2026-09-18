@@ -68,6 +68,124 @@ Do not use download counts or familiarity as the main technical reason.
 At scaffold time, check current compatible releases and lock exact resolved versions.
 Do not copy old version tables blindly.
 
+## 2a. Clean Architecture: dependency direction, not copied folder names
+
+Keep calculation rules independent from HTTP, WebSocket libraries, React, and storage technology.
+Outer adapters translate inputs and outputs; they do not own candle or book rules.
+
+The supplied Go template illustrates constructor injection and replaceable use-case dependencies.
+Its domain Task also contains MongoDB identifiers and persistence/transport tags.
+We adopt the separation intent and use stricter domain independence for this streaming product.
+Its authentication, database, and CRUD endpoints solve different requirements.
+Source: [template domain model](https://github.com/amitshekhariitbhu/go-backend-clean-architecture/blob/main/domain/task.go) and [use-case constructor](https://github.com/amitshekhariitbhu/go-backend-clean-architecture/blob/main/usecase/task_usecase.go).
+
+The article's indexed sections emphasize handlers, business operations, and external adapters.
+Only indexed portions were readable; the full Medium page was unavailable to the reader.
+Its [author's repository](https://github.com/Rayato159/go-clean-arch-v2) documents a related Echo/PostgreSQL example with separate models and database entities.
+Source: [Ruangyot Nanchiang's article](https://medium.com/@rayato159/how-to-implement-clean-architecture-in-golang-en-f50d66378ebf).
+Neither reference requires us to introduce a repository when no persistent store exists.
+
+### Backend import graph
+
+An arrow means “may import.” It does not mean runtime message direction.
+
+```text
+cmd/server → transport, market, delivery, config
+transport  → transport/wire, delivery, model, precision
+market     → sim, book, candle, model
+sim        → book, model
+book       → model
+candle     → model
+tier       → model
+delivery   → tier, model
+precision  → model
+transport/wire → model, precision
+model      → standard-library value types only
+```
+
+Move shared values to `backend/internal/model/types.go`.
+Keep `internal/market` for runtime ownership and capture requests.
+Putting both roles in market would permit the cycle `market → sim → market`.
+
+Pure model values use integer ticks, lots, times, revisions, and validated domain enums.
+They contain no JSON, BSON, form, database, or framework tags.
+Only `internal/transport/wire` owns the transmitted decimal strings, JSON field names, and wire error bodies.
+A DTO is a data-transfer object: a shape used at an external boundary.
+A domain value represents the market concept independently of that boundary's encoding.
+
+```text
+JSON DTO → validate and translate → integer domain values → rules
+JSON DTO ← encode and translate  ← domain result         ← rules
+```
+
+Do not reuse a decoded mutable map as published domain state.
+The adapter must produce owned values with explicit validation results.
+Tests cover both translation directions and prevent accidental float arithmetic.
+
+### Application ports and composition
+
+A port is a small behaviour contract needed by a consumer.
+Define it in the consuming package, rather than a global interfaces package.
+
+- `delivery.StateSource` returns the latest immutable `model.Publication`.
+- `delivery.FrameSink` writes one typed delivery output with a deadline, returning success, duration, or a typed failure.
+- `transport.MarketReader` captures metadata, book, trades, or candle history using a request context.
+
+`delivery.FrameSink` receives an application output, not JSON text or a library connection.
+Its transport adapter owns DTO conversion, encoding, the outbound byte limit, and the actual socket write.
+Cursor commit occurs only after FrameSink reports success.
+The adapter reports oversize as a typed failure before any market bytes are written.
+
+`cmd/server/main.go` constructs concrete owners and adapters and passes them to their consumers.
+This construction point is the composition root.
+No module looks up dependencies in a global service locator.
+
+A port does not require one interface for every function.
+Use direct functions for pure calculations and interfaces only for real substitution boundaries.
+The market owner implements StateSource and MarketReader structurally; it need not import the consumers.
+Protocol ping control remains in the transport adapter and shares connection cancellation.
+Application read events reach delivery as typed inputs after validation.
+
+### Frontend import graph
+
+```text
+React entry → runtime/create-market-runtime
+runtime     → net, engines, store, domain
+net         → net/wire, domain
+net/wire    → domain, zod/mini
+engines     → domain
+store       → domain, zustand/vanilla
+chart       → domain, lightweight-charts
+ui          → domain, store, chart, selected primitives
+```
+
+`src/domain/model.ts` contains plain TypeScript values and events, without framework or schema-library imports.
+`src/net/wire/schema.ts` and `mapping.ts` validate and translate wire data.
+Engines receive typed domain events and return state/effects.
+They do not import Zod, React, Zustand, chart code, DOM objects, fetch, or WebSocket.
+A supplied numeric `now` or small callback provides time where needed.
+
+`src/runtime/create-market-runtime.ts` connects engines and adapters and dispatches session resets coherently.
+The runtime owns browser listener registration through the lifecycle adapter and disposes its child resources.
+React owns chart mounting and chart cleanup; it reads store snapshots and dispatches typed user actions.
+The chart adapter never initiates fetches or subscriptions.
+
+### Boundary checks
+
+P01 establishes import restrictions before feature code grows.
+P05 and P08 extend them as owners and UI modules appear.
+Backend checks inspect `go list -json` imports; TypeScript checks inspect resolved project imports.
+Tests include direct imports and transitive paths through local re-export files.
+Dependency inversion is demonstrated by substitute StateSource/FrameSink tests, not by a directory name.
+
+## 2b. Error ownership
+
+Pure domain operations return typed domain errors without HTTP status or user-facing transport text.
+The adapter maps those errors once into the protocol's documented error code and status.
+Unknown internal failures become a generic `internal_error`; detailed diagnostics remain server-side.
+Cancellation releases pending work and does not attempt a response after the requester has departed.
+Application code does not expose raw database, library, or stack-trace errors to the browser.
+
 ## 3. Market owner and publication
 
 The market owner contains the random generator, book, candle aggregator, retained trades, and history.
@@ -100,7 +218,7 @@ Avoid publishing intermediate book changes before replenishment restores require
 Full REST candle history is not copied into every delivery publication.
 REST submits a bounded capture request to the market owner.
 The owner copies the requested slice and replies through a one-slot response channel.
-JSON encoding and network writes happen after that copy, outside the owner.
+DTO conversion, JSON encoding, and network writes happen after that copy, in transport adapters outside the owner.
 
 Capture request queue capacity is32.
 Request deadline is2s. On queue saturation or deadline, return503 `busy`.
@@ -166,6 +284,7 @@ Registry locks cover add/remove/copy only, never network operations.
 | Codec | JSON/schema validation and exact decimal conversion | Network retries or UI state |
 | BookSync | Snapshot generation, buffer, book range application, panel sync state | WebSocket creation |
 | CandleFeed | Selection requestId, history generation, revision merge, sorted bounded candles | Renderer lifecycle |
+| RecentTrades | Session-aware REST/live ID merge, bounded recent list, latest-trade selection | Socket creation or UI formatting |
 | Telemetry | Ping IDs, local timing, terminal results, reports | Automatic tier classification |
 | Store publisher | Immutable UI snapshots and dirty frame scheduling | Core aggregation |
 | Chart adapter | Series data conversion, ascending updates, inspection, chart cleanup | Fetching or subscribing |
@@ -179,6 +298,8 @@ At server-session change, reset every relevant engine before accepting new marke
 Track transport health, producer progress, and individual panel continuity separately.
 An empty history is a valid loaded result, not a transport failure.
 The chart can become live when a current-generation live candle arrives after empty history.
+Fetch metadata and recent trades alongside book and history after hello.
+Merge REST and live trades by ID within the session; a late REST response cannot replace a newer last trade.
 
 Process validated events through bounded ordered engines, then publish UI changes using requestAnimationFrame.
 This batches bursts and avoids coupling React renders to every raw message.
@@ -203,7 +324,7 @@ No unnecessary inheritance hierarchy is planned.
 ## 8. Public boundaries for independent tests
 
 These signatures state meaning, not implementation.
-Detailed language types must preserve the fields in protocol.md.
+Boundary DTOs preserve protocol.md and schemas.md. Domain types preserve their meaning using integer values.
 
 ```text
 ParsePrice(text) -> integer ticks or validation error
@@ -213,7 +334,7 @@ Book.Snapshot() -> immutable levels and sequence
 Candles.Apply(trade) / Candles.Advance(logicalTime) -> changed candle keys
 Candles.History(interval,limit) -> copied ascending candle values
 Tier.Step(state,input,monotonicNow) -> next state and reasoned transitions
-Delivery.Build(publication,cursors,subscription) -> message and candidate next cursors
+Delivery.Build(publication,cursors,subscription) -> typed output and candidate next cursors
 BookSync.receiveRange(range) / receiveSnapshot(snapshot,generation) -> state and effects
 CandleFeed.select(interval,requestId) / receiveHistory / receiveLive -> state and effects
 Telemetry.pingSent(id,time) / pongReceived(id,time) / advance(time) -> reports and timeouts

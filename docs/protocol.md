@@ -1,7 +1,8 @@
 # SpacKt protocol and behaviour contract
 
 Status: selected planning contract, version 1. No implementation exists yet.
-This document is authoritative for field names, units, boundaries, and shared algorithms in the plan.
+This document is authoritative for behaviour, units, boundaries, and shared algorithms.
+[Wire schemas](schemas.md) defines exact field types, nesting, strictness, and complete HTTP metadata.
 
 ## 1. Representation and identity
 
@@ -48,6 +49,7 @@ Zero book removal accepts `"0"` or `"0.0000"`.
 All `/api/` responses use `Cache-Control: no-store`.
 Every successful market response contains `session` and `symbol`.
 Errors use `{error:{code,message}}`; do not return stack traces.
+The complete error catalogue and adapter mapping are in schemas.md.
 
 | Endpoint | Request bounds | Successful response |
 |---|---|---|
@@ -56,7 +58,7 @@ Errors use `{error:{code,message}}`; do not return stack traces.
 | `GET /api/candles` | interval required; limit 1–1000, default500; requestId optional0 or positive safe integer | `{session,symbol,interval,requestId,candles}` ascending by t, unique keys |
 | `GET /api/trades` | limit1–100, default50 | `{session,symbol,trades}` newest first |
 | `GET /healthz` | No parameters | 200 `{status:"ok"}` when process can answer; not a market freshness claim |
-| `GET /readyz` | No parameters | 200 after initialization and recent owner progress; otherwise503 `{status:"not_ready"}` |
+| `GET /readyz` | No parameters | 200 `{status:"ok"}` after initialization and recent owner progress; otherwise503 `{status:"not_ready"}` |
 
 Unknown interval, invalid number, duplicate parameter, or unexpected query parameter returns400 `bad_request`.
 Unknown route returns404. Unsupported method returns405.
@@ -68,6 +70,10 @@ Before readiness, capture the latest initialized trade price as referencePrice.
 It remains fixed for that session and changes only when a new session initializes.
 Every browser fetches meta after hello and checks its session before using the reference.
 A failed or mismatched meta response keeps price movement unready while recovery retries.
+Fetch recent trades after hello, alongside meta, book, and history.
+Merge trade REST and socket data by ID within the session, keeping the largest ID as latest price.
+A late REST response cannot roll back a newer trade.
+Skip already-seen IDs and retain at most100 recent trades in the browser.
 
 Candle history includes the active candle if present.
 Default initial browser request is 500 candles, limited by available retained data.
@@ -187,9 +193,15 @@ Browser initial or reset procedure:
 
 A reversed or invalid range is malformed and triggers recovery.
 A new snapshot generation rejects any late result from a previous retry.
-Retry delays: 0.5s,1s,2s,4s,8s, capped at five attempts per recovery episode.
+A book recovery episode allows five total attempts. The first is immediate.
+Delays before attempts2–5 are0.5s,1s,2s,4s respectively.
+Each HTTP attempt has a5s browser deadline and two-MiB response-body cap.
+Use the same bounded policy for metadata, history, and recent-trade bootstrap, each with its own one-request owner.
 After exhaustion, show a retry action; a successful sync resets the attempt counter.
-A buffer overflow cancels the current attempt and starts a bounded new attempt, never silently drops needed ranges.
+A buffer overflow cancels the current attempt and spends the next attempt from the same episode budget.
+Repeated gaps, reset messages, and overflows do not reset the budget.
+Only a completed valid synchronization or an explicit Retry begins a fresh recovery episode.
+An interval change cancels its previous history episode and starts a new generation; it does not reset an unrelated book episode.
 
 The server keeps4096 book-change records.
 An expired cursor causes `book_reset`, advances server sentSeq to the current published seq, and resumes later ranges.
@@ -228,8 +240,11 @@ App ping every1s while visible; expiry3s; maximum four unresolved probes.
 Each ID completes once. Ignore late, duplicate, unknown, and old-epoch pongs.
 Use one browser monotonic clock for send and receive.
 Store successful RTTs in ping-send order, bounded to the latest ten successes.
+Sampling age uses the browser send timestamp, with the same monotonic clock.
 Latency is their median. Jitter is mean absolute difference between consecutive successful RTTs.
-At least two successes are required before a valid report.
+At least two successes no older than10s are required before a valid report.
+Expire older successes even when no new pong arrives; do not repeatedly report an old healthy window.
+The server uses receive time for report deadlines; one report cannot supply future dwell evidence.
 Report every2s. Do not report unknown jitter as zero.
 Successes separated by timeouts can be adjacent in this statistic; document that limitation.
 Ping timeout count is diagnostic only, not a packet-loss estimate or automatic-tier input in version1.
@@ -279,7 +294,12 @@ A heartbeat reads current market publication; it must not fabricate producer pro
 `marketRev` advances from owner clock progress at least every100ms while healthy, even without a trade.
 Visible browser transport silence for10s triggers stale/reconnect.
 No increasing `marketRev` for5s marks market panels feed-delayed, even if pongs arrive.
-If heartbeat bookSeq/candleLatestRev stays ahead of the local applied head for over `max(5s,3*flushMs)`, resync that panel.
+While hidden, suspend browser freshness alarms because browser scheduling is intentionally reduced.
+On visible return, clear old freshness timers and require fresh evidence before normal LIVE state.
+Track whether each panel head advances toward advertised heartbeat heads.
+If it makes no progress for `max(5s,3*flushMs)` while a same-session advertised head remains ahead, resync that panel.
+Reset the no-progress timer whenever the local applied head advances.
+Simply remaining behind a constantly advancing live head is not sufficient to trigger resync.
 Thus a healthy quiet feed remains live, but lost payload delivery cannot hide behind pongs or heartbeats.
 Ignore candle-head comparisons for noncurrent requestId.
 
@@ -292,6 +312,9 @@ Unsubscribe listeners, stop timers, abort requests, and remove chart resources o
 Reconnect full jitter: random delay from0 to `min(10s,500ms*2^attempt)`.
 Reset attempts after30s of healthy synchronized live operation.
 Close4001 reconnects when visible;4002 never retries;4008 starts with at least10s delay and caps at30s.
+Close4009 marks cached data stale and permits one automatic fresh connection after a random10–30s delay.
+That connection reloads meta, book, trades, and history through the normal recovery path.
+If4009 repeats before30s of healthy synchronized operation, stop automatic retry and show a manual Retry action.
 Other failures use ordinary backoff. An online event permits a new immediate attempt.
 
 ## 11. Limits and errors
@@ -301,15 +324,42 @@ Other failures use ordinary backoff. An online event permits a new immediate att
 | Active sockets | 100; reject upgrade with503 when full |
 | New sockets per source IP | Token bucket30/minute, burst10; HTTP429 before upgrade |
 | Inbound WebSocket message | 4096bytes; close1009 when exceeded |
-| Inbound control rate | 20 messages/second sustained, burst20; close4008 after repeated violation |
+| Inbound control rate | Token bucket20 tokens/second, capacity20; each application message consumes1; close4008 on the first message without a token |
 | Debug command rate | One/second; reject extra command with rate_limited without applying it |
 | Per-connection control queue | 32 validated events; full queue closes4008 |
 | Book sync buffer | 500 ranges or two MiB, whichever comes first |
-| Server outbound message | One MiB; recover oversized market payload through reset and snapshot |
-| Pending REST work | One book request and one history request per browser engine |
+| Server outbound market update | One MiB after UTF-8 encoding; reject before write, preserve sent cursors, and close4009 payload_too_large |
+| Pending REST work | One request each for metadata, book, trades, and current history;5s request deadlines and bounded attempts |
 
-Error codes: `bad_message`, `unknown_interval`, `bad_request_id`, `wrong_session`, `rate_limited`, `debug_disabled`, `not_ready`, `busy`.
+Error codes and HTTP mappings: see schemas.md section5.
+A FrameSink oversize error closes4009 before sending any part of the market update.
+Do not truncate market data, split a sequence range without a new contract, or advance unsent cursors.
+Transport tests inject a smaller market-frame budget to exercise this otherwise unlikely path.
 Malformed JSON and recoverable invalid messages are rejected and counted; error messages are limited to one per10s per connection.
 Protocol-version mismatch closes4002; debug disconnect4003; hidden timeout4001; shutdown1001; normal disposal1000.
 A failed transport or failed liveness probe may surface as abnormal closure1006 at the browser;1006 is never transmitted.
 Graceful shutdown: fail readiness, stop accepts, close connections1001, cancel owners, allow up to10s, then exit.
+
+## 12. REST origin and browser access contract
+
+Public market reads do not use cookies or other browser credentials. Use fetch credentials:"omit".
+For a configured Origin, echo that exact value in Access-Control-Allow-Origin on success and error responses.
+Include Vary: Origin. Never emit Access-Control-Allow-Credentials or wildcard origin for these routes.
+Requests without Origin may use public read endpoints; CORS is not authentication.
+A present but unconfigured Origin receives403 origin_denied without an allow-origin header.
+
+For known /api routes, OPTIONS preflight permits GET and the Accept header only.
+Validate Origin, Access-Control-Request-Method, and every requested header case-insensitively.
+Return204 with exact allow-origin, Access-Control-Allow-Methods: GET, and Access-Control-Allow-Headers: Accept.
+Include Vary for Origin, Access-Control-Request-Method, and Access-Control-Request-Headers.
+Unsupported requested methods or headers return403. Ordinary unsupported request methods return405 with Allow: GET, OPTIONS.
+Do not send Content-Type or custom request headers on GET from the application.
+Keep WebSocket Origin validation separate; REST preflight does not authorize a socket upgrade.
+
+## 13. Configuration validation
+
+Environment overrides are parsed and checked before accepting market traffic.
+Reject contradictory entry/recovery thresholds, reversed tier rates, unsafe bounds, unknown origins, and nonpositive time windows.
+Use the same validated policy to drive the tier machine and populate /api/meta.
+The frontend displays that policy; it does not silently duplicate different threshold constants.
+Initial ready snapshots and metadata must share the backend session.

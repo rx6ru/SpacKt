@@ -694,3 +694,11 @@ RD6. Display chart time in UTC only.
 - No color-only state exists.
 - No huge font download is required.
 - All required states have visible copy.
+
+## 22. Contract recheck clarification
+
+A responsive connection alone does not make every panel live.
+The runtime tracks producer progress and each panel's applied update progress separately.
+Metadata supplies the displayed target rates; the UI does not maintain a second threshold table.
+If outbound-budget recovery repeatedly fails, keep values stale and show an explicit Retry action.
+The user-facing message explains failed refresh, not internal byte counts or DTO terminology.

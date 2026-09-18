@@ -7,6 +7,7 @@ It is a selected planning baseline, not a claim that the application exists.
 |---|---|
 | [Product requirements](prd.md) | Outcomes, scope, journeys, acceptance, and submission requirements |
 | [Architecture and decisions](architecture.md) | Chosen mechanisms, alternatives, SOLID boundaries, and reasons |
+| [Wire schemas](schemas.md) | Exact JSON objects, metadata, bounds, and strictness |
 | [Protocol contract](protocol.md) | Exact fields, units, timing, recovery, and resource bounds |
 | [UI and UX design](design.md) | Layout, tokens, components, states, interaction, and accessibility |
 | [Independent test plan](test-plan.md) | RED author ownership and concrete verification cases |
@@ -27,7 +28,7 @@ No product source, executable product tests, dependency installation, or deploym
 ## Planning verification
 
 The independent full-set critic accepted this baseline after the identified contradictions were corrected.
-The set contains 32 product requirements, 44 UI checks, and 101 planned test cases.
+The set contains 32 product requirements, 44 UI checks, and 117 planned test cases.
 All 64 nonblank assignment lines were checked against the requirements.
 Local document links and reference IDs passed validation.
 The selected text/accent contrast examples exceed 4.5:1.
