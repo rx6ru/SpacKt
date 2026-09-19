@@ -62,6 +62,23 @@ function renderDiagnostics(view = snapshot()) {
   return { onDebug, onRetry };
 }
 
+function openDialog() {
+  fireEvent.click(screen.getByRole("button", { name: "Open diagnostics" }));
+  return screen.getByRole("dialog", { name: "Diagnostics and debug controls" });
+}
+
+function debugControls(dialog: HTMLElement) {
+  return [
+    within(dialog).getByRole("radio", { name: "Full" }),
+    within(dialog).getByRole("radio", { name: "Degraded" }),
+    within(dialog).getByRole("radio", { name: "Minimal" }),
+    within(dialog).getByLabelText("Pong delay"),
+    within(dialog).getByRole("button", { name: "Apply pong delay" }),
+    within(dialog).getByRole("button", { name: "Drop next book delta" }),
+    within(dialog).getByRole("button", { name: "Disconnect this session" }),
+  ];
+}
+
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
@@ -69,10 +86,40 @@ afterEach(() => {
 });
 
 describe("DiagnosticsDrawer", () => {
+  it.each([
+    ["connecting", { status: "connecting", online: true }],
+    ["reconnecting", { status: "reconnecting", online: true }],
+    ["offline", { status: "offline", online: false }],
+  ] as const)("disables debug commands while the connection is %s", (_name, connection) => {
+    const { onDebug } = renderDiagnostics(snapshot({
+      connection: { ...createInitialSnapshot("1m").connection, ...connection },
+      liveEligible: false,
+    }));
+
+    const dialog = openDialog();
+
+    for (const control of debugControls(dialog)) {
+      expect((control as HTMLButtonElement | HTMLInputElement).disabled).toBe(true);
+    }
+    fireEvent.click(within(dialog).getByRole("button", { name: "Drop next book delta" }));
+    expect(onDebug).not.toHaveBeenCalled();
+  });
+
+  it("keeps debug commands usable for a live connection", () => {
+    const { onDebug } = renderDiagnostics();
+
+    const dialog = openDialog();
+
+    for (const control of debugControls(dialog)) {
+      expect((control as HTMLButtonElement | HTMLInputElement).disabled).toBe(false);
+    }
+    fireEvent.click(within(dialog).getByRole("button", { name: "Drop next book delta" }));
+    expect(onDebug).toHaveBeenCalledWith({ action: "dropNextBookDelta" });
+  });
+
   it("does not show book resyncing when a debug click has not changed the live snapshot", () => {
     const { onDebug } = renderDiagnostics();
-    fireEvent.click(screen.getByRole("button", { name: "Open diagnostics" }));
-    const dialog = screen.getByRole("dialog", { name: "Diagnostics and debug controls" });
+    const dialog = openDialog();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Drop next book delta" }));
 
@@ -82,8 +129,7 @@ describe("DiagnosticsDrawer", () => {
 
   it("does not show offline when a debug click has not changed the live snapshot", () => {
     const { onDebug } = renderDiagnostics();
-    fireEvent.click(screen.getByRole("button", { name: "Open diagnostics" }));
-    const dialog = screen.getByRole("dialog", { name: "Diagnostics and debug controls" });
+    const dialog = openDialog();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect this session" }));
 
@@ -98,8 +144,7 @@ describe("DiagnosticsDrawer", () => {
       freshness: { ...createInitialSnapshot("1m").freshness, condition: "stale" },
     }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Open diagnostics" }));
-    const dialog = screen.getByRole("dialog", { name: "Diagnostics and debug controls" });
+    const dialog = openDialog();
 
     expect(within(dialog).getByText("reconnecting")).toBeTruthy();
   });
@@ -107,7 +152,7 @@ describe("DiagnosticsDrawer", () => {
   it("opens one diagnostics form owner without duplicate input ids", () => {
     renderDiagnostics();
 
-    fireEvent.click(screen.getByRole("button", { name: "Open diagnostics" }));
+    openDialog();
 
     expect(screen.getByRole("dialog", { name: "Diagnostics and debug controls" })).toBeTruthy();
     expect(document.querySelectorAll("#pong-delay")).toHaveLength(1);
@@ -116,8 +161,7 @@ describe("DiagnosticsDrawer", () => {
   it("uses radio semantics for the force tier control", () => {
     renderDiagnostics();
 
-    fireEvent.click(screen.getByRole("button", { name: "Open diagnostics" }));
-    const dialog = screen.getByRole("dialog", { name: "Diagnostics and debug controls" });
+    const dialog = openDialog();
     const tierGroup = within(dialog).getByRole("radiogroup", { name: "Force delivery tier" });
 
     expect(within(tierGroup).getByRole("radio", { name: "Auto" }).getAttribute("aria-checked")).toBe("true");

@@ -384,6 +384,9 @@ test("separates configured and observed delivery rates", async ({ page }) => {
 
 test("forces each delivery tier and returns to auto", async ({ page }) => {
   await gotoMarket(page);
+  await expect(region(page, "Connection and delivery").getByText("Live")).toBeVisible({
+    timeout: 20_000,
+  });
   const panel = await diagnostics(page);
 
   await forceTier(panel, "Full");
