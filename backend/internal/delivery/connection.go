@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"errors"
+	"spackt/internal/model"
 	"spackt/internal/tier"
 	"time"
 )
@@ -35,7 +36,6 @@ const (
 	writeDeadline          = 5 * time.Second
 	controlTick            = 25 * time.Millisecond
 	heartbeatEvery         = time.Second
-	hiddenCloseAfter       = 180 * time.Second
 	maxDelayedPongs        = 8
 	errorEvery             = 10 * time.Second
 	debugEvery             = time.Second
@@ -140,7 +140,7 @@ func (c *Connection) onTick(ctx context.Context, now time.Time) (CloseResult, bo
 	if result, closeNow := c.maybeWritePolicy(ctx, state, now); closeNow {
 		return result, true
 	}
-	if !c.hiddenSince.IsZero() && now.Sub(c.hiddenSince) >= hiddenCloseAfter {
+	if !c.hiddenSince.IsZero() && now.Sub(c.hiddenSince) >= model.DeliveryHiddenCloseAfter {
 		return CloseResult{Code: closeHiddenTimeout, Reason: "hidden timeout"}, true
 	}
 	if result, closeNow := c.processDuePongs(ctx, now); closeNow {

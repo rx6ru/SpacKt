@@ -361,7 +361,8 @@ Keep WebSocket Origin validation separate; REST preflight does not authorize a s
 ## 13. Configuration validation
 
 Environment overrides are parsed and checked before accepting market traffic.
-Reject contradictory entry/recovery thresholds, reversed tier rates, unsafe bounds, unknown origins, and nonpositive time windows.
-Use the same validated policy to drive the tier machine and populate /api/meta.
-The frontend displays that policy; it does not silently duplicate different threshold constants.
+They configure deployment and resource bounds, such as origins, history length, frame bytes, and connection caps.
+The delivery tier policy is fixed in version1 and tested from one shared backend constant set.
+The tier machine, hidden-close path, and /api/meta use that same constant set.
+The frontend displays /api/meta values; it does not silently duplicate different threshold constants.
 Initial ready snapshots and metadata must share the backend session.

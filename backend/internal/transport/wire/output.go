@@ -5,6 +5,7 @@ import (
 	"errors"
 	"spackt/internal/model"
 	"spackt/internal/precision"
+	"time"
 )
 
 var ErrMessageTooLarge = errors.New("message exceeds byte budget")
@@ -69,11 +70,11 @@ func Metadata(pub model.Publication, bookChanges int) map[string]any {
 	return map[string]any{
 		"session": pub.Session, "symbol": pub.Symbol, "tickSize": "0.01", "lotSize": "0.0001", "intervals": []any{"1s", "1m", "5m"}, "referencePrice": precision.FormatPrice(pub.ReferencePriceTicks),
 		"tierPolicy": map[string]any{
-			"initialTier": "degraded", "flushMs": map[string]any{"full": 100, "degraded": 500, "minimal": 2000},
-			"enterDegraded": map[string]any{"latencyAboveMs": 400, "jitterAboveMs": 60}, "enterMinimal": map[string]any{"latencyAboveMs": 900, "jitterAboveMs": 150},
-			"recoverFull": map[string]any{"latencyBelowMs": 300, "jitterBelowMs": 40}, "recoverDegraded": map[string]any{"latencyBelowMs": 700, "jitterBelowMs": 100},
-			"downgradeDwellMs": 3000, "upgradeDwellMs": 10000, "missingReportStepMs": 5000, "missingReportMinimalMs": 12000,
-			"pingEveryMs": 1000, "pongTimeoutMs": 3000, "reportEveryMs": 2000, "rttWindowSamples": 10, "minimumReportSamples": 2, "hiddenCloseMs": 180000,
+			"initialTier": model.DeliveryInitialTier, "flushMs": map[string]any{"full": model.DeliveryFlushFullMS, "degraded": model.DeliveryFlushDegradedMS, "minimal": model.DeliveryFlushMinimalMS},
+			"enterDegraded": map[string]any{"latencyAboveMs": model.DeliveryEnterDegradedLatencyMS, "jitterAboveMs": model.DeliveryEnterDegradedJitterMS}, "enterMinimal": map[string]any{"latencyAboveMs": model.DeliveryEnterMinimalLatencyMS, "jitterAboveMs": model.DeliveryEnterMinimalJitterMS},
+			"recoverFull": map[string]any{"latencyBelowMs": model.DeliveryRecoverFullLatencyMS, "jitterBelowMs": model.DeliveryRecoverFullJitterMS}, "recoverDegraded": map[string]any{"latencyBelowMs": model.DeliveryRecoverDegradedLatencyMS, "jitterBelowMs": model.DeliveryRecoverDegradedJitterMS},
+			"downgradeDwellMs": int(model.DeliveryDowngradeDwell / time.Millisecond), "upgradeDwellMs": int(model.DeliveryUpgradeDwell / time.Millisecond), "missingReportStepMs": int(model.DeliveryMissingReportStep / time.Millisecond), "missingReportMinimalMs": int(model.DeliveryMissingReportMinimal / time.Millisecond),
+			"pingEveryMs": model.BrowserProbeEveryMS, "pongTimeoutMs": model.BrowserPongTimeoutMS, "reportEveryMs": model.BrowserReportEveryMS, "rttWindowSamples": model.BrowserRTTWindowSamples, "minimumReportSamples": model.DeliveryMinimumReportSamples, "hiddenCloseMs": int(model.DeliveryHiddenCloseAfter / time.Millisecond),
 		},
 		"retention": map[string]any{"historyCandles": map[string]any{"1s": 3600, "1m": 1440, "5m": 2016}, "deliveryClosedCandles": 64, "recentTrades": 200, "bookChanges": bookChanges, "maximumBookLevelsPerSide": 50},
 	}
