@@ -177,6 +177,25 @@ describe("frontend import boundary checker", () => {
     expect(importBoundaryViolations(source, join(srcRoot, "net", "wire", "schema.ts"))).toEqual([]);
   });
 
+  it("accepts approved Radix UI primitive imports inside ui", () => {
+    const source = `
+      import * as Dialog from "@radix-ui/react-dialog";
+      import * as ToggleGroup from "@radix-ui/react-toggle-group";
+      import { Tooltip } from "@radix-ui/react-tooltip";
+      export { CheckIcon } from "@radix-ui/react-icons";
+    `;
+
+    expect(importBoundaryViolations(source, join(srcRoot, "ui", "controls.tsx"))).toEqual([]);
+  });
+
+  it("rejects Radix lookalike package prefixes inside ui", () => {
+    const source = `import * as Dialog from "@radix-ui-fake/react-dialog";`;
+
+    expect(importBoundaryViolations(source, join(srcRoot, "ui", "controls.tsx"))).toEqual([
+      "ui imports external package @radix-ui-fake/react-dialog",
+    ]);
+  });
+
   it("rejects side-effect imports, re-exports, dynamic imports, and wrong zod entrypoints", () => {
     const source = `
       import "react";
