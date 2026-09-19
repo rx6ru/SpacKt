@@ -237,9 +237,18 @@ A market event chooses buy or sell, consumes the current best opposite level, an
 Fill quantity is a seeded integer from1 to the smaller of10000 lots and that level's available quantity.
 A trade cannot exceed available quantity.
 Limit additions choose a valid side and non-crossing price near the current book.
+They move bids toward the current best ask and asks toward the current best bid.
 Cancellations remove a seeded amount from an existing level.
 After each event, replenish the far end to20 levels per side and remove excess levels beyond50.
 Every actual level change, including replenishment or removal, enters the sequence log.
+If the emitted changes expose a spread above20 ticks, add recovery quotes around the previous midpoint.
+Place the recovery bid10 ticks below that midpoint and the recovery ask10 ticks above it.
+Then run depth repair again, so each published book keeps20 to50 levels per side.
+The20-tick cap matches one initial20-level, one-tick ladder.
+It is a demo rule, not exchange calibration.
+A plain inward limit-addition flip can still leave large gaps after best quotes disappear.
+Do not fake chart values to hide gaps.
+Candles must use generated trade prices from the simulator.
 
 Price bounds:100.00–100000.00 USD.
 Per-level size bound:10.0000 BTC.
