@@ -1,6 +1,6 @@
 # SpacKt protocol and behaviour contract
 
-Status: selected planning contract, version 1. No implementation exists yet.
+Version 1 protocol contract.
 This document is authoritative for behaviour, units, boundaries, and shared algorithms.
 [Wire schemas](schemas.md) defines exact field types, nesting, strictness, and complete HTTP metadata.
 

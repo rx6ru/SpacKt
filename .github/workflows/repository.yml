@@ -1,0 +1,23 @@
+name: Repository policy
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  repository:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: backend/go.mod
+          cache: false
+      - name: Test repository tools
+        run: go -C backend test ./cmd/checkrepo ./cmd/checkcoverage
+      - name: Check committed repository content
+        run: go -C backend run ./cmd/checkrepo -root .. -mode head

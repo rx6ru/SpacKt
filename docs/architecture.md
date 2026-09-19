@@ -1,7 +1,7 @@
 # SpacKt architecture and engineering decisions
 
-Status: selected planning baseline. Product implementation remains stopped.
-Read [PRD](prd.md), [protocol](protocol.md), and [test plan](test-plan.md) together.
+This document describes the software architecture and its design decisions.
+Read the [protocol](protocol.md) and [wire schemas](schemas.md) for external contracts.
 The protocol document owns exact wire fields and behavioural numbers.
 
 ## 1. Selected system shape
@@ -172,8 +172,7 @@ The chart adapter never initiates fetches or subscriptions.
 
 ### Boundary checks
 
-P01 establishes import restrictions before feature code grows.
-P05 and P08 extend them as owners and UI modules appear.
+Automated import checks enforce these dependency boundaries.
 Backend checks inspect `go list -json` imports; TypeScript checks inspect resolved project imports.
 Tests include direct imports and transitive paths through local re-export files.
 Dependency inversion is demonstrated by substitute StateSource/FrameSink tests, not by a directory name.

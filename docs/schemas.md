@@ -1,6 +1,6 @@
 # Version 1 wire schemas
 
-Status: version 1 contract. Go and TypeScript validators are implemented in P01.
+Version 1. Go and TypeScript validate the same wire contract.
 This document defines exact transmitted shapes. [Protocol](protocol.md) defines their behaviour.
 Changes require matching Go and TypeScript fixtures before implementation changes.
 
@@ -212,7 +212,7 @@ The per-message symbol comes from the accepted hello for this connection; no rep
 
 ## 7. Schema fixtures and independent checks
 
-Create JSON fixtures only during P01, before relevant behaviour implementation.
+Shared JSON fixtures check both validators against the same contract.
 Cover every HTTP success/error envelope and every WebSocket direction/type.
 Use raw .json text fixtures for duplicate keys, trailing documents, invalid escapes, and depth limits.
 Go and TypeScript must agree on accept/reject outcomes and normalized domain values.
