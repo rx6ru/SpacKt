@@ -104,7 +104,8 @@ transport/wire → model, precision
 model      → standard-library value types only
 ```
 
-Move shared values to `backend/internal/model/types.go`.
+Keep shared domain values and delivery-policy constants in `backend/internal/model`.
+The fixed policy drives tier decisions, hidden-tab close, and metadata output.
 Keep `internal/market` for runtime ownership and capture requests.
 Putting both roles in market would permit the cycle `market → sim → market`.
 
@@ -365,6 +366,21 @@ Docker Compose runs the same backend and a static frontend server locally.
 Browser URLs use published localhost ports, never Compose-only service names.
 Use a backend `-healthcheck` executable mode for Compose readiness in the small non-root runtime image.
 Render checks `/readyz` for readiness.
+
+Runtime configuration comes from these environment variables.
+`-addr` overrides `PORT` for local tests and manual runs.
+
+| Name | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `8080` | Selects the HTTP listen port and the default healthcheck target. |
+| `SPACKT_SEED` | `7` | Selects the deterministic simulator event stream. |
+| `SPACKT_EPOCH_MS` | `0` | Uses current-time alignment when zero. Uses a fixed epoch when positive. |
+| `SPACKT_HISTORY_MINUTES` | `360` | Selects the generated warm history window. |
+| `SPACKT_ALLOWED_ORIGINS` | local frontend origins | Selects exact HTTP or HTTPS browser origins. |
+| `SPACKT_DEBUG_CONTROLS` | `true` | Enables or disables debug WebSocket controls. |
+| `SPACKT_MAX_CONNECTIONS` | `100` | Caps active WebSocket connections. |
+| `SPACKT_MARKET_FRAME_BUDGET_BYTES` | `1048576` | Caps one outgoing market frame. |
+| `SPACKT_BOOK_CHANGES` | `4096` | Caps retained order-book changes. |
 
 CORS allows configured frontend origins for REST.
 WebSocket upgrade origin is checked separately.

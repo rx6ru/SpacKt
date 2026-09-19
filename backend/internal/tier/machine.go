@@ -2,6 +2,7 @@ package tier
 
 import (
 	"math"
+	"spackt/internal/model"
 	"time"
 )
 
@@ -58,7 +59,7 @@ type Machine struct {
 }
 
 func New(now time.Duration) *Machine {
-	return NewWithAuto(now, TierDegraded)
+	return NewWithAuto(now, Tier(model.DeliveryInitialTier))
 }
 
 func NewWithAuto(now time.Duration, initial Tier) *Machine {
@@ -137,8 +138,8 @@ func (m *Machine) setForced(tier Tier) {
 }
 
 func (m *Machine) applyReport(report Report, now time.Duration) string {
-	degradedBad := report.LatencyMS > 400 || report.JitterMS > 60
-	minimalBad := report.LatencyMS > 900 || report.JitterMS > 150
+	degradedBad := report.LatencyMS > model.DeliveryEnterDegradedLatencyMS || report.JitterMS > model.DeliveryEnterDegradedJitterMS
+	minimalBad := report.LatencyMS > model.DeliveryEnterMinimalLatencyMS || report.JitterMS > model.DeliveryEnterMinimalJitterMS
 
 	updateTimer(&m.degradedBadSince, degradedBad, now)
 	updateTimer(&m.minimalBadSince, minimalBad, now)
@@ -146,19 +147,19 @@ func (m *Machine) applyReport(report Report, now time.Duration) string {
 	upGood := upwardGood(m.auto, report)
 	updateTimer(&m.upGoodSince, upGood, now)
 
-	if confirmed(m.minimalBadSince, now, 3*time.Second) && m.auto != TierMinimal {
+	if confirmed(m.minimalBadSince, now, model.DeliveryDowngradeDwell) && m.auto != TierMinimal {
 		m.auto = TierMinimal
 		m.resetEvidence()
 		return "automatic tier minimal after confirmed report"
 	}
 
-	if confirmed(m.degradedBadSince, now, 3*time.Second) && m.auto == TierFull {
+	if confirmed(m.degradedBadSince, now, model.DeliveryDowngradeDwell) && m.auto == TierFull {
 		m.auto = TierDegraded
 		m.resetEvidence()
 		return "automatic tier degraded after confirmed report"
 	}
 
-	if confirmed(m.upGoodSince, now, 10*time.Second) {
+	if confirmed(m.upGoodSince, now, model.DeliveryUpgradeDwell) {
 		if upgraded, changed := upgrade(m.auto); changed {
 			m.auto = upgraded
 			m.resetEvidence()
@@ -172,7 +173,7 @@ func (m *Machine) applyReport(report Report, now time.Duration) string {
 
 func (m *Machine) applyMissingReport(now time.Duration) string {
 	since := now - m.lastVisibleReport
-	if since >= 12*time.Second {
+	if since >= model.DeliveryMissingReportMinimal {
 		m.resetEvidence()
 		m.missingDowngraded = true
 		if m.auto != TierMinimal {
@@ -182,7 +183,7 @@ func (m *Machine) applyMissingReport(now time.Duration) string {
 		return ""
 	}
 
-	if since >= 5*time.Second && !m.missingDowngraded {
+	if since >= model.DeliveryMissingReportStep && !m.missingDowngraded {
 		m.resetEvidence()
 		m.missingDowngraded = true
 		if downgraded, changed := downgrade(m.auto); changed {
@@ -243,9 +244,9 @@ func confirmed(since *time.Duration, now time.Duration, dwell time.Duration) boo
 func upwardGood(auto Tier, report Report) bool {
 	switch auto {
 	case TierMinimal:
-		return report.LatencyMS < 700 && report.JitterMS < 100
+		return report.LatencyMS < model.DeliveryRecoverDegradedLatencyMS && report.JitterMS < model.DeliveryRecoverDegradedJitterMS
 	case TierDegraded:
-		return report.LatencyMS < 300 && report.JitterMS < 40
+		return report.LatencyMS < model.DeliveryRecoverFullLatencyMS && report.JitterMS < model.DeliveryRecoverFullJitterMS
 	default:
 		return false
 	}
@@ -276,19 +277,19 @@ func downgrade(tier Tier) (Tier, bool) {
 func flushMS(tier Tier) int {
 	switch tier {
 	case TierFull:
-		return 100
+		return model.DeliveryFlushFullMS
 	case TierMinimal:
-		return 2000
+		return model.DeliveryFlushMinimalMS
 	default:
-		return 500
+		return model.DeliveryFlushDegradedMS
 	}
 }
 
 func validReport(report Report) bool {
 	return validMeasurement(report.LatencyMS) &&
 		validMeasurement(report.JitterMS) &&
-		report.Samples >= 2 &&
-		report.Samples <= 10
+		report.Samples >= model.DeliveryMinimumReportSamples &&
+		report.Samples <= model.DeliveryMaximumReportSamples
 }
 
 func validMeasurement(value float64) bool {
