@@ -43,8 +43,7 @@ export class RequestOwner<T> {
   }
 
   cancel(options?: { preserveBudget?: boolean }): void {
-    void options;
-    if (!this.disposed) this.clear();
+    if (!this.disposed) this.clear(options?.preserveBudget);
   }
 
   dispose(): void {
@@ -57,11 +56,13 @@ export class RequestOwner<T> {
     return { ...this.state };
   }
 
-  private clear(): void {
+  private clear(preserveBudget = false): void {
     this.invalidate();
     this.state.status = "idle";
-    this.state.attemptsUsed = 0;
-    this.state.error = null;
+    if (!preserveBudget) {
+      this.state.attemptsUsed = 0;
+      this.state.error = null;
+    }
     this.options.onChange?.();
   }
 

@@ -5,17 +5,30 @@ export type ObservedRateState = {
 };
 
 export class ObservedRate {
-  constructor(now: number) { void now; }
+  private events: number[] = [];
+  constructor(private startedAt: number) {}
+
   reset(now: number): void {
-    void now;
-    throw new Error("Not implemented: ObservedRate.reset");
+    this.startedAt = now;
+    this.events = [];
   }
+
   record(now: number): void {
-    void now;
-    throw new Error("Not implemented: ObservedRate.record");
+    this.prune(now);
+    this.events.push(now);
   }
+
   read(now: number): ObservedRateState {
-    void now;
-    throw new Error("Not implemented: ObservedRate.read");
+    this.prune(now);
+    const windowMs = Math.min(now - this.startedAt, 10_000);
+    return {
+      valuePerSecond: windowMs < 1_000 ? null : this.events.length / (windowMs / 1_000),
+      windowMs,
+      sampleCount: this.events.length,
+    };
+  }
+
+  private prune(now: number): void {
+    this.events = this.events.filter((time) => time > now - 10_000);
   }
 }

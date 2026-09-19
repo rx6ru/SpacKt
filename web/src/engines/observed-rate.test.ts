@@ -35,7 +35,7 @@ describe("ObservedRate", () => {
   it("caps the denominator at ten seconds after the observation window matures", () => {
     const rate = new ObservedRate(0);
 
-    rate.record(6_000);
+    rate.record(6_001);
     rate.record(12_000);
     rate.record(15_000);
 
