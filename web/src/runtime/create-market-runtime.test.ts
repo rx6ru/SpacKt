@@ -829,6 +829,75 @@ describe("createMarketRuntime composition", () => {
     expect(runtime.getSnapshot().cachedStale).toBe(false);
   });
 
+  it("does not open a socket before the hidden 4008 cooldown expires on visible return", async () => {
+    const { runtime, browser, scheduler, webSocket } = await setup();
+    const socket = bootstrapSocket(runtime, webSocket);
+
+    browser.setHidden(true);
+    socket.closeFromServer(4008, "rate limited");
+    browser.setHidden(false);
+
+    expect(webSocket.sockets).toHaveLength(1);
+    scheduler.advance(9_999);
+    expect(webSocket.sockets).toHaveLength(1);
+
+    scheduler.advance(1);
+    expect(webSocket.sockets).toHaveLength(2);
+    expect(runtime.getSnapshot().connection.status).toBe("connecting");
+  });
+
+  it("does not let visible return or manual retry bypass the hidden 4009 cooldown", async () => {
+    const { runtime, browser, scheduler, webSocket, fetchCalls } = await setup();
+    const socket = bootstrapSocket(runtime, webSocket);
+    await resolveBootstrap(runtime, fetchCalls);
+
+    browser.setHidden(true);
+    socket.closeFromServer(4009, "payload too large");
+    scheduler.advance(8_000);
+    browser.setHidden(false);
+    runtime.retry();
+
+    expect(runtime.getSnapshot().cachedStale).toBe(true);
+    expect(webSocket.sockets).toHaveLength(1);
+    scheduler.advance(1_999);
+    expect(webSocket.sockets).toHaveLength(1);
+
+    scheduler.advance(1);
+    expect(webSocket.sockets).toHaveLength(2);
+  });
+
+  it("opens on visible return when the hidden 4009 cooldown already elapsed", async () => {
+    const { runtime, browser, scheduler, webSocket, fetchCalls } = await setup();
+    const socket = bootstrapSocket(runtime, webSocket);
+    await resolveBootstrap(runtime, fetchCalls);
+
+    browser.setHidden(true);
+    socket.closeFromServer(4009, "payload too large");
+    scheduler.advance(10_000);
+    browser.setHidden(false);
+
+    expect(webSocket.sockets).toHaveLength(2);
+    expect(runtime.getSnapshot().cachedStale).toBe(true);
+  });
+
+  it("keeps the cooldown through hidden offline online return", async () => {
+    const { runtime, browser, scheduler, webSocket } = await setup();
+    const socket = bootstrapSocket(runtime, webSocket);
+
+    browser.setHidden(true);
+    socket.closeFromServer(4008, "rate limited");
+    browser.setOnline(false);
+    browser.setHidden(false);
+    browser.setOnline(true);
+
+    expect(webSocket.sockets).toHaveLength(1);
+    scheduler.advance(9_999);
+    expect(webSocket.sockets).toHaveLength(1);
+
+    scheduler.advance(1);
+    expect(webSocket.sockets).toHaveLength(2);
+  });
+
   it("sets liveEligible only after metadata, book, trades, current history, and feed readiness are live", async () => {
     const { runtime, webSocket, fetchCalls } = await setup();
     const socket = bootstrapSocket(runtime, webSocket);

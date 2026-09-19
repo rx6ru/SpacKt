@@ -213,11 +213,13 @@ describe("ConnectionLifecycle reconnect policy", () => {
   });
 
   it("delays 4008 retries by at least 10 seconds and caps them at 30 seconds", () => {
-    const { lifecycle } = controller([0, 0.99, 0.99, 0.99, 0.99]);
+    const { lifecycle, advanceBy } = controller([0, 0.99, 0.99, 0.99, 0.99]);
 
     const delays = Array.from({ length: 5 }, () => {
       lifecycle.connect();
-      return lifecycle.socketClosed({ code: 4008 }).scheduleReconnect?.delayMs ?? 0;
+      const delay = lifecycle.socketClosed({ code: 4008 }).scheduleReconnect?.delayMs ?? 0;
+      advanceBy(delay);
+      return delay;
     });
 
     expect(delays[0]).toBeGreaterThanOrEqual(10_000);
@@ -225,10 +227,11 @@ describe("ConnectionLifecycle reconnect policy", () => {
   });
 
   it("allows one automatic 4009 fresh reload and then requires manual retry when 4009 repeats before healthy reset", () => {
-    const { lifecycle } = controller([0.25, 0.25]);
+    const { lifecycle, advanceBy } = controller([0.25, 0.25]);
 
     lifecycle.connect();
     const first = lifecycle.socketClosed({ code: 4009 });
+    advanceBy(15_000);
     lifecycle.connect();
     const repeated = lifecycle.socketClosed({ code: 4009 });
 
@@ -241,10 +244,11 @@ describe("ConnectionLifecycle reconnect policy", () => {
   });
 
   it("does not let connect bypass manual retry after repeated 4009", () => {
-    const { lifecycle } = controller([0.25, 0.25]);
+    const { lifecycle, advanceBy } = controller([0.25, 0.25]);
 
     lifecycle.connect();
     lifecycle.socketClosed({ code: 4009 });
+    advanceBy(15_000);
     lifecycle.connect();
     lifecycle.socketClosed({ code: 4009 });
     const effects = lifecycle.connect();
@@ -254,10 +258,11 @@ describe("ConnectionLifecycle reconnect policy", () => {
   });
 
   it("uses retry for manual 4009 recovery with a fresh state reload", () => {
-    const { lifecycle } = controller([0.25, 0.25]);
+    const { lifecycle, advanceBy } = controller([0.25, 0.25]);
 
     lifecycle.connect();
     lifecycle.socketClosed({ code: 4009 });
+    advanceBy(15_000);
     lifecycle.connect();
     lifecycle.socketClosed({ code: 4009 });
     const effects = lifecycle.retry();
@@ -285,10 +290,11 @@ describe("ConnectionLifecycle reconnect policy", () => {
   });
 
   it("reloads fresh state on the next connect after 4009", () => {
-    const { lifecycle } = controller([0.25]);
+    const { lifecycle, advanceBy } = controller([0.25]);
 
     lifecycle.connect();
     lifecycle.socketClosed({ code: 4009 });
+    advanceBy(15_000);
     const effects = lifecycle.connect();
 
     expect(effects.openSocket).toEqual({ epoch: 2, reloadFreshState: true });
@@ -372,6 +378,131 @@ describe("ConnectionLifecycle reconnect policy", () => {
 
     expect(hidden.socketClosed({ code: 1006 }).scheduleReconnect).toBeUndefined();
     expect(offline.socketClosed({ code: 1006 }).scheduleReconnect).toBeUndefined();
+  });
+
+  it("keeps the 4008 cooldown when visibility returns after a hidden rate-limit close", () => {
+    const { lifecycle } = controller([0.25]);
+
+    lifecycle.connect();
+    lifecycle.visibilityChanged(true);
+    const hiddenClose = lifecycle.socketClosed({ code: 4008 });
+    const visibleAgain = lifecycle.visibilityChanged(false);
+
+    expect(hiddenClose.openSocket).toBeUndefined();
+    expect(hiddenClose.scheduleReconnect).toBeUndefined();
+    expect(visibleAgain.openSocket).toBeUndefined();
+    expect(visibleAgain.scheduleReconnect).toEqual({
+      epoch: 1,
+      delayMs: 15_000,
+      reason: "rate_limited",
+    });
+  });
+
+  it("keeps the 4008 cooldown when online returns after an offline rate-limit close", () => {
+    const { lifecycle } = controller([0.25]);
+
+    lifecycle.connect();
+    lifecycle.onlineChanged(false);
+    const offlineClose = lifecycle.socketClosed({ code: 4008 });
+    const onlineAgain = lifecycle.onlineChanged(true);
+
+    expect(offlineClose.openSocket).toBeUndefined();
+    expect(offlineClose.scheduleReconnect).toBeUndefined();
+    expect(onlineAgain.openSocket).toBeUndefined();
+    expect(onlineAgain.scheduleReconnect).toEqual({
+      epoch: 1,
+      delayMs: 15_000,
+      reason: "rate_limited",
+    });
+  });
+
+  it("uses the one automatic 4009 fresh retry when visibility returns after a hidden payload close", () => {
+    const { lifecycle, advanceBy } = controller([0.25]);
+
+    lifecycle.connect();
+    lifecycle.visibilityChanged(true);
+    const hiddenClose = lifecycle.socketClosed({ code: 4009 });
+    const visibleAgain = lifecycle.visibilityChanged(false);
+    advanceBy(15_000);
+    const freshRetry = lifecycle.connect();
+
+    expect(hiddenClose.openSocket).toBeUndefined();
+    expect(hiddenClose.scheduleReconnect).toBeUndefined();
+    expect(visibleAgain.openSocket).toBeUndefined();
+    expect(visibleAgain.scheduleReconnect).toEqual({
+      epoch: 1,
+      delayMs: 15_000,
+      reason: "payload_too_large",
+    });
+    expect(freshRetry.openSocket).toEqual({ epoch: 2, reloadFreshState: true });
+    expect(lifecycle.getState()).toMatchObject({
+      staleCachedData: true,
+      manualRetryRequired: false,
+    });
+  });
+
+  it("uses the one automatic 4009 fresh retry when online returns after an offline payload close", () => {
+    const { lifecycle, advanceBy } = controller([0.25]);
+
+    lifecycle.connect();
+    lifecycle.onlineChanged(false);
+    const offlineClose = lifecycle.socketClosed({ code: 4009 });
+    const onlineAgain = lifecycle.onlineChanged(true);
+    advanceBy(15_000);
+    const freshRetry = lifecycle.connect();
+
+    expect(offlineClose.openSocket).toBeUndefined();
+    expect(offlineClose.scheduleReconnect).toBeUndefined();
+    expect(onlineAgain.openSocket).toBeUndefined();
+    expect(onlineAgain.scheduleReconnect).toEqual({
+      epoch: 1,
+      delayMs: 15_000,
+      reason: "payload_too_large",
+    });
+    expect(freshRetry.openSocket).toEqual({ epoch: 2, reloadFreshState: true });
+    expect(lifecycle.getState()).toMatchObject({
+      staleCachedData: true,
+      manualRetryRequired: false,
+    });
+  });
+
+  it("requires manual retry when a hidden 4009 repeats before healthy recovery", () => {
+    const { lifecycle, advanceBy } = controller([0.25]);
+
+    lifecycle.connect();
+    lifecycle.socketClosed({ code: 4009 });
+    advanceBy(15_000);
+    lifecycle.connect();
+    lifecycle.visibilityChanged(true);
+    const repeated = lifecycle.socketClosed({ code: 4009 });
+    const visibleAgain = lifecycle.visibilityChanged(false);
+
+    expect(repeated.openSocket).toBeUndefined();
+    expect(repeated.scheduleReconnect).toBeUndefined();
+    expect(visibleAgain.openSocket).toBeUndefined();
+    expect(visibleAgain.scheduleReconnect).toBeUndefined();
+    expect(lifecycle.getState()).toMatchObject({
+      staleCachedData: true,
+      manualRetryRequired: true,
+      status: "idle",
+    });
+  });
+
+  it("keeps protocol mismatch terminal across offline and online events", () => {
+    const { lifecycle } = controller();
+
+    lifecycle.connect();
+    lifecycle.onlineChanged(false);
+    lifecycle.socketClosed({ code: 4002 });
+    const onlineAgain = lifecycle.onlineChanged(true);
+    const retry = lifecycle.retry();
+
+    expect(onlineAgain.openSocket).toBeUndefined();
+    expect(retry.openSocket).toBeUndefined();
+    expect(lifecycle.getState()).toMatchObject({
+      status: "terminal",
+      terminalReason: "protocol_mismatch",
+    });
   });
 });
 
