@@ -19,7 +19,6 @@ var ErrPayloadTooLarge = errors.New("payload too large")
 
 type Options struct {
 	InitialCursors Cursors
-	BookRetention  uint64
 }
 
 type Cursors struct {
@@ -34,16 +33,26 @@ type Cursors struct {
 type FrameKind string
 
 const (
+	FrameHello        FrameKind = "hello"
 	FrameSubscribed   FrameKind = "subscribed"
+	FramePong         FrameKind = "pong"
 	FrameUpdate       FrameKind = "update"
+	FrameTier         FrameKind = "tier"
+	FrameHeartbeat    FrameKind = "heartbeat"
 	FrameBookReset    FrameKind = "book_reset"
 	FrameCandlesReset FrameKind = "candles_reset"
+	FrameError        FrameKind = "error"
 )
 
 type Frame struct {
 	Session      string
 	Kind         FrameKind
+	ConnID       string
 	MarketRev    uint64
+	Policy       *PolicyStatus
+	PongID       uint64
+	Heartbeat    *Heartbeat
+	Error        *Error
 	Subscribed   *SubscribedFrame
 	BookReset    *BookResetFrame
 	CandlesReset *CandlesResetFrame
@@ -51,6 +60,28 @@ type Frame struct {
 	Candles      *CandleBatch
 	Trades       []model.Trade
 	Skipped      uint64
+}
+
+type PolicyStatus struct {
+	Effective string
+	Auto      string
+	Forced    *string
+	Hidden    bool
+	FlushMS   int
+	Reason    string
+}
+
+type Heartbeat struct {
+	MarketRev       uint64
+	BookSeq         uint64
+	CandleRequestID *uint64
+	CandleLatestRev *uint64
+	FeedReady       bool
+}
+
+type Error struct {
+	Code    string
+	Message string
 }
 
 type SubscribedFrame struct {

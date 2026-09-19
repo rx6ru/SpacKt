@@ -270,8 +270,8 @@ func TestUnsupportedMethodReturnsAllowHeader(t *testing.T) {
 	}
 	assertNoStore(t, header)
 	assertErrorCode(t, body, "method_not_allowed")
-	if got := header.Get("Allow"); got != http.MethodGet {
-		t.Fatalf("Allow = %q, want %q", got, http.MethodGet)
+	if got := header.Get("Allow"); got != "GET, OPTIONS" {
+		t.Fatalf("Allow = %q, want %q", got, "GET, OPTIONS")
 	}
 }
 
@@ -380,6 +380,36 @@ func TestWebSocketDeniedOriginDoesNotUpgrade(t *testing.T) {
 	if resp == nil || resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("upgrade status = %v, want 403", statusOf(resp))
 	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read upgrade rejection body: %v", err)
+	}
+	assertErrorCode(t, decodeObject(t, body), "origin_denied")
+}
+
+func TestWebSocketMissingOriginDoesNotUpgrade(t *testing.T) {
+	ts := newTestServer(t, nil)
+	waitForStatus(t, ts.srv.URL+"/readyz", http.StatusOK)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL(ts.srv.URL), &websocket.DialOptions{})
+	if conn != nil {
+		conn.CloseNow()
+	}
+	if err == nil {
+		t.Fatal("Dial without Origin succeeded, want rejection")
+	}
+	if resp == nil || resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("upgrade status = %v, want 403", statusOf(resp))
+	}
+	defer resp.Body.Close()
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		t.Fatalf("read upgrade rejection body: %v", readErr)
+	}
+	assertErrorCode(t, decodeObject(t, body), "origin_denied")
 }
 
 func TestWebSocketHelloIncludesProtocolSessionTierAndFlush(t *testing.T) {
@@ -632,7 +662,7 @@ func TestSubscribeDoesNotEmitOldCandlePayloadAfterNewAcknowledgement(t *testing.
 
 func TestTinyMarketFrameBudgetClosesBeforeAnyMarketUpdate(t *testing.T) {
 	ts := newTestServer(t, func(cfg *Config) {
-		cfg.MarketFrameBudgetBytes = 512
+		cfg.MarketFrameBudgetBytes = 128
 	})
 	waitForStatus(t, ts.srv.URL+"/readyz", http.StatusOK)
 
@@ -988,13 +1018,33 @@ func collectCandleBatches(t *testing.T, conn *websocket.Conn, within time.Durati
 
 func collectCandleBatchesFromBoth(t *testing.T, left, right *websocket.Conn, within time.Duration, requestID int64) ([][]map[string]any, [][]map[string]any) {
 	t.Helper()
-	deadline := time.Now().Add(within)
+	ctx, cancel := context.WithTimeout(context.Background(), within)
+	defer cancel()
+
+	leftMessages, leftErrs := startMessagePump(ctx, left)
+	rightMessages, rightErrs := startMessagePump(ctx, right)
 	var leftBatches [][]map[string]any
 	var rightBatches [][]map[string]any
-	for time.Now().Before(deadline) {
-		leftBatches = appendCandleBatchIfAvailable(t, leftBatches, left, time.Until(deadline), requestID)
-		rightBatches = appendCandleBatchIfAvailable(t, rightBatches, right, time.Until(deadline), requestID)
+	for {
+		select {
+		case msg := <-leftMessages:
+			leftBatches = appendCandleBatch(t, leftBatches, msg, requestID)
+		case msg := <-rightMessages:
+			rightBatches = appendCandleBatch(t, rightBatches, msg, requestID)
+		case err := <-leftErrs:
+			if ctx.Err() == nil {
+				t.Fatalf("left connection read failed before collection deadline: %v", err)
+			}
+		case err := <-rightErrs:
+			if ctx.Err() == nil {
+				t.Fatalf("right connection read failed before collection deadline: %v", err)
+			}
+		case <-ctx.Done():
+			goto done
+		}
 	}
+done:
+	cancel()
 	if len(leftBatches) == 0 {
 		t.Fatalf("left connection received no candle batches for requestId %d in %s", requestID, within)
 	}
@@ -1004,19 +1054,47 @@ func collectCandleBatchesFromBoth(t *testing.T, left, right *websocket.Conn, wit
 	return leftBatches, rightBatches
 }
 
-func appendCandleBatchIfAvailable(t *testing.T, batches [][]map[string]any, conn *websocket.Conn, remaining time.Duration, requestID int64) [][]map[string]any {
+func startMessagePump(ctx context.Context, conn *websocket.Conn) (<-chan map[string]any, <-chan error) {
+	messages := make(chan map[string]any, 64)
+	errs := make(chan error, 1)
+	go func() {
+		defer close(messages)
+		for {
+			typ, payload, err := conn.Read(ctx)
+			if err != nil {
+				if ctx.Err() == nil {
+					errs <- err
+				}
+				return
+			}
+			if typ != websocket.MessageText {
+				errs <- fmt.Errorf("message type = %v, want text", typ)
+				return
+			}
+			dec := json.NewDecoder(bytes.NewReader(payload))
+			dec.UseNumber()
+			var body map[string]any
+			if err := dec.Decode(&body); err != nil {
+				errs <- fmt.Errorf("decode JSON %s: %w", payload, err)
+				return
+			}
+			var extra any
+			if err := dec.Decode(&extra); err != io.EOF {
+				errs <- fmt.Errorf("extra JSON content in %s", payload)
+				return
+			}
+			select {
+			case messages <- body:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return messages, errs
+}
+
+func appendCandleBatch(t *testing.T, batches [][]map[string]any, msg map[string]any, requestID int64) [][]map[string]any {
 	t.Helper()
-	if remaining <= 0 {
-		return batches
-	}
-	timeout := 25 * time.Millisecond
-	if remaining < timeout {
-		timeout = remaining
-	}
-	msg, ok := readOptional(t, conn, timeout)
-	if !ok {
-		return batches
-	}
 	candles, ok := msg["candles"].(map[string]any)
 	if !ok || int64At(t, candles, "requestId") != requestID {
 		return batches

@@ -84,7 +84,7 @@ func TestCandlesIncludeAllClosedBarsBetweenSlowFlushes(t *testing.T) {
 
 func TestExpiredBookCursorEmitsResetWithoutAdvancingBeforeSuccessfulWrite(t *testing.T) {
 	source := &stateSource{current: publicationWithBookChanges(5000, logTail(905, 5000))}
-	session := NewSession("conn-a", source, Options{BookRetention: 4096, InitialCursors: Cursors{BookSeq: 10}})
+	session := NewSession("conn-a", source, Options{InitialCursors: Cursors{BookSeq: 10}})
 	prepared := session.PrepareFlush(1_700_000_000_000)
 
 	reset := selectFrameByKind(t, prepared.Frames(), FrameBookReset)
