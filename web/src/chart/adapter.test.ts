@@ -89,6 +89,8 @@ function mounted(onInspect = vi.fn()) {
   return mountCandleChart(container, { onInspect });
 }
 
+const resetReady = { reset: true } as const;
+
 function crosshair(timeSeconds: number, data: unknown = {}): void {
   chartPort.activeCrosshairHandler?.({
     point: { x: 4, y: 8 },
@@ -122,7 +124,7 @@ describe("mountCandleChart", () => {
       lowTicks: 9_975,
     });
 
-    adapter.setCandles([first], true);
+    adapter.setCandles([first], resetReady);
 
     expect(chartPort.series.setData).toHaveBeenCalledWith([
       { time: 1_700_000_000, open: 100, high: 102.5, low: 99.75, close: 101.25 },
@@ -137,17 +139,17 @@ describe("mountCandleChart", () => {
   it("passes first sorted history to setData", () => {
     const adapter = mounted();
 
-    adapter.setCandles([candle(1_000), candle(2_000), candle(3_000)], true);
+    adapter.setCandles([candle(1_000), candle(2_000), candle(3_000)], resetReady);
 
     expect(chartPort.series.setData.mock.calls[0][0].map((bar: { time: number }) => bar.time)).toEqual([1, 2, 3]);
   });
 
   it("uses explicit reset to replace sorted history", () => {
     const adapter = mounted();
-    adapter.setCandles([candle(1_000)], true);
+    adapter.setCandles([candle(1_000)], resetReady);
     chartPort.series.setData.mockClear();
 
-    adapter.setCandles([candle(4_000), candle(5_000)], true);
+    adapter.setCandles([candle(4_000), candle(5_000)], resetReady);
 
     expect(chartPort.series.setData).toHaveBeenCalledWith([
       expect.objectContaining({ time: 4 }),
@@ -158,7 +160,7 @@ describe("mountCandleChart", () => {
   it("does not duplicate chart updates for unchanged candle data", () => {
     const adapter = mounted();
     const current = candle(1_000, 1, 10_000);
-    adapter.setCandles([current], true);
+    adapter.setCandles([current], resetReady);
     chartPort.series.setData.mockClear();
     chartPort.series.update.mockClear();
 
@@ -170,7 +172,7 @@ describe("mountCandleChart", () => {
 
   it("updates the current candle incrementally", () => {
     const adapter = mounted();
-    adapter.setCandles([candle(1_000, 1, 10_000)], true);
+    adapter.setCandles([candle(1_000, 1, 10_000)], resetReady);
     chartPort.series.update.mockClear();
 
     adapter.setCandles([candle(1_000, 2, 10_050)]);
@@ -182,7 +184,7 @@ describe("mountCandleChart", () => {
 
   it("updates a new later candle incrementally", () => {
     const adapter = mounted();
-    adapter.setCandles([candle(1_000, 1, 10_000)], true);
+    adapter.setCandles([candle(1_000, 1, 10_000)], resetReady);
     chartPort.series.update.mockClear();
 
     adapter.setCandles([candle(1_000, 1, 10_000), candle(2_000, 1, 10_125)]);
@@ -196,7 +198,7 @@ describe("mountCandleChart", () => {
     const adapter = mounted();
     const visibleRange = { from: 10, to: 20 };
     chartPort.timeScale.getVisibleLogicalRange.mockReturnValue(visibleRange);
-    adapter.setCandles([candle(1_000, 1, 10_000), candle(2_000, 1, 10_100)], true);
+    adapter.setCandles([candle(1_000, 1, 10_000), candle(2_000, 1, 10_100)], resetReady);
     chartPort.series.update.mockClear();
     chartPort.series.setData.mockClear();
     chartPort.timeScale.setVisibleLogicalRange.mockClear();
@@ -218,7 +220,7 @@ describe("mountCandleChart", () => {
     const visibleRange = { from: 900, to: 1_000 };
     const initial = Array.from({ length: 1_000 }, (_value, index) => candle(index * 1_000, 1, 10_000 + index));
     const trimmed = Array.from({ length: 1_000 }, (_value, index) => candle((index + 1) * 1_000, 1, 10_001 + index));
-    adapter.setCandles(initial, true);
+    adapter.setCandles(initial, resetReady);
     chartPort.timeScale.getVisibleLogicalRange.mockReturnValue(visibleRange);
     chartPort.series.setData.mockClear();
 
@@ -233,10 +235,81 @@ describe("mountCandleChart", () => {
   it("fits content only for the initial reset", () => {
     const adapter = mounted();
 
-    adapter.setCandles([candle(1_000)], true);
-    adapter.setCandles([candle(1_000), candle(2_000)], true);
+    adapter.setCandles([candle(1_000)], resetReady);
+    adapter.setCandles([candle(1_000), candle(2_000)], resetReady);
 
     expect(chartPort.timeScale.fitContent).toHaveBeenCalledTimes(1);
+  });
+
+  it("fits complete history after a live seed arrives before history", () => {
+    const adapter = mounted();
+    const seed = candle(361_000, 1, 10_500);
+    const history = Array.from({ length: 361 }, (_value, index) => candle((index + 1) * 1_000, 1, 10_000 + index));
+    chartPort.timeScale.getVisibleLogicalRange.mockReturnValue({ from: -1, to: 0 });
+
+    adapter.setCandles([seed], { reset: true, historyReady: false });
+    expect(chartPort.timeScale.fitContent).not.toHaveBeenCalled();
+    chartPort.timeScale.fitContent.mockClear();
+    chartPort.timeScale.setVisibleLogicalRange.mockClear();
+
+    adapter.setCandles(history, { reset: false, historyReady: true });
+
+    expect(chartPort.series.setData).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ time: 1 }),
+        expect.objectContaining({ time: 361 }),
+      ]),
+    );
+    expect(chartPort.timeScale.fitContent).toHaveBeenCalledTimes(1);
+    expect(chartPort.timeScale.setVisibleLogicalRange).not.toHaveBeenCalled();
+  });
+
+  it("fits when loading becomes ready with the same candle data", () => {
+    const adapter = mounted();
+    const seed = [candle(60_000, 1, 10_500)];
+
+    adapter.setCandles(seed, { reset: true, historyReady: false });
+    expect(chartPort.timeScale.fitContent).not.toHaveBeenCalled();
+    chartPort.timeScale.fitContent.mockClear();
+    chartPort.timeScale.setVisibleLogicalRange.mockClear();
+
+    adapter.setCandles(seed, { reset: false, historyReady: true });
+
+    expect(chartPort.timeScale.fitContent).toHaveBeenCalledTimes(1);
+    expect(chartPort.timeScale.setVisibleLogicalRange).not.toHaveBeenCalled();
+  });
+
+  it("fits the first live candle after ready history is empty", () => {
+    const adapter = mounted();
+    const firstLive = candle(60_000, 1, 10_500);
+
+    adapter.setCandles([], { reset: true, historyReady: true });
+    chartPort.timeScale.fitContent.mockClear();
+
+    adapter.setCandles([firstLive]);
+
+    expect(chartPort.series.setData).toHaveBeenCalledWith([
+      expect.objectContaining({ time: 60 }),
+    ]);
+    expect(chartPort.timeScale.fitContent).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves the user viewport after complete history is initialized", () => {
+    const adapter = mounted();
+    const history = Array.from({ length: 120 }, (_value, index) => candle((index + 1) * 1_000, 1, 10_000 + index));
+    const resync = history.map((item, index) => index === 0 || index === history.length - 1
+      ? candle(item.timeMs, item.rev + 1, item.closeTicks + 25 + index)
+      : item);
+    const userRange = { from: 80, to: 119 };
+    adapter.setCandles(history, resetReady);
+    chartPort.timeScale.getVisibleLogicalRange.mockReturnValue(userRange);
+    chartPort.timeScale.fitContent.mockClear();
+    chartPort.timeScale.setVisibleLogicalRange.mockClear();
+
+    adapter.setCandles(resync);
+
+    expect(chartPort.timeScale.fitContent).not.toHaveBeenCalled();
+    expect(chartPort.timeScale.setVisibleLogicalRange).toHaveBeenCalledWith(userRange);
   });
 
   it("accepts empty candle arrays without chart updates", () => {
@@ -251,7 +324,7 @@ describe("mountCandleChart", () => {
   it("clears rendered bars and inspection when current history becomes empty", () => {
     const onInspect = vi.fn();
     const adapter = mounted(onInspect);
-    adapter.setCandles([candle(1_000, 1, 10_000)], true);
+    adapter.setCandles([candle(1_000, 1, 10_000)], resetReady);
     adapter.inspect(1_000);
     chartPort.series.setData.mockClear();
     chartPort.chart.clearCrosshairPosition.mockClear();
@@ -266,10 +339,10 @@ describe("mountCandleChart", () => {
 
   it("clears rendered bars when an explicit reset has empty history", () => {
     const adapter = mounted();
-    adapter.setCandles([candle(1_000, 1, 10_000)], true);
+    adapter.setCandles([candle(1_000, 1, 10_000)], resetReady);
     chartPort.series.setData.mockClear();
 
-    adapter.setCandles([], true);
+    adapter.setCandles([], resetReady);
 
     expect(chartPort.series.setData).toHaveBeenCalledWith([]);
   });
@@ -278,7 +351,7 @@ describe("mountCandleChart", () => {
     const onInspect = vi.fn();
     const adapter = mounted(onInspect);
     const inspected = candle(1_000, 1, 10_000, { volumeLots: 42 });
-    adapter.setCandles([inspected], true);
+    adapter.setCandles([inspected], resetReady);
 
     crosshair(1, { time: 1, open: 99.5, high: 100.75, low: 98.75, close: 100 });
 
@@ -316,7 +389,7 @@ describe("mountCandleChart", () => {
     const onInspect = vi.fn();
     const adapter = mounted(onInspect);
     const inspected = candle(2_000, 1, 10_150);
-    adapter.setCandles([candle(1_000), inspected], true);
+    adapter.setCandles([candle(1_000), inspected], resetReady);
 
     adapter.inspect(2_000);
 

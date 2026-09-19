@@ -60,6 +60,10 @@ function formatMoney(value: string) {
   return `${grouped}.${fractionPart.padEnd(2, "0").slice(0, 2)}`;
 }
 
+function formatUTC(timeMs: number) {
+  return new Date(timeMs).toISOString().slice(11, 19);
+}
+
 async function expectTextContent(locator: Locator, pattern: RegExp | string) {
   await expect(locator).toBeVisible();
   await expect
@@ -219,6 +223,84 @@ test("switches chart intervals with pressed state", async ({ page }) => {
     "aria-checked",
     "true",
   );
+});
+
+test("fits delayed history after a live seed", async ({ page, request }) => {
+  await gotoMarket(page);
+
+  const chart = region(page, "Candlestick chart");
+  let releaseHistory!: () => void;
+  const holdHistory = new Promise<void>((resolve) => {
+    releaseHistory = resolve;
+  });
+  let heldHistory: {
+    body: string;
+    status: number;
+    headers: Record<string, string>;
+  } | null = null;
+  let historyReleased = false;
+  const releaseHeldHistory = () => {
+    if (!historyReleased) {
+      historyReleased = true;
+      releaseHistory();
+    }
+  };
+
+  await page.route("**/api/candles?**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get("interval") !== "1s" || heldHistory) {
+      await route.continue();
+      return;
+    }
+
+    const response = await request.get(route.request().url());
+    heldHistory = {
+      body: await response.text(),
+      status: response.status(),
+      headers: await response.headers(),
+    };
+    await holdHistory;
+    await route.fulfill(heldHistory).catch(() => undefined);
+  });
+
+  try {
+    await chart.getByRole("radio", { name: "1s" }).click();
+    await expect(chart.getByText("Loading 1s history")).toBeVisible();
+    const legendUTC = chart
+      .locator(".legend-cell")
+      .filter({ has: page.getByText("UTC", { exact: true }) })
+      .locator("strong");
+    await expect
+      .poll(async () => (await legendUTC.textContent())?.trim() ?? "", { timeout: 20_000 })
+      .not.toBe("-");
+
+    releaseHeldHistory();
+    await expect(chart.getByText("Loading 1s history")).toBeHidden({ timeout: 20_000 });
+    expect(heldHistory).not.toBeNull();
+
+    const history = JSON.parse(heldHistory!.body) as {
+      candles: Array<{ t: number }>;
+    };
+    expect(history.candles.length).toBeGreaterThan(40);
+    expect(typeof history.candles[0]?.t).toBe("number");
+    const firstUTCs = new Set(history.candles.slice(0, 2).map((candle) => formatUTC(candle.t)));
+    const interiorUTCs = new Set(history.candles.slice(20, -20).map((candle) => formatUTC(candle.t)));
+    const latestUTC = formatUTC(history.candles[history.candles.length - 1]!.t);
+    const frame = chart.locator(".chart-frame");
+    const box = await frame.boundingBox();
+    expect(box).not.toBeNull();
+
+    await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+    await expect(chart.getByText("Inspecting candle")).toBeVisible();
+    const inspectedUTC = (await legendUTC.textContent())?.trim() ?? "";
+
+    expect(firstUTCs.has(inspectedUTC)).toBe(false);
+    expect(inspectedUTC).not.toBe(latestUTC);
+    expect(interiorUTCs.has(inspectedUTC)).toBe(true);
+  } finally {
+    releaseHeldHistory();
+    await page.unroute("**/api/candles?**").catch(() => undefined);
+  }
 });
 
 test("traps diagnostics focus and returns it on Escape", async ({ page }) => {

@@ -205,7 +205,52 @@ describe("MarketChart", () => {
     })} onSelectInterval={vi.fn()} />);
     await waitForChartMount();
 
-    await waitFor(() => expect(chartPort.adapter?.setCandles).toHaveBeenLastCalledWith(latestCandles, false));
+    await waitFor(() => expect(chartPort.adapter?.setCandles).toHaveBeenLastCalledWith(
+      latestCandles,
+      expect.objectContaining({
+        reset: false,
+        historyReady: true,
+      }),
+    ));
+  });
+
+  it("passes history readiness separately from interval reset", async () => {
+    const seed = [candle(60_000, 10_100)];
+    const loadingSnapshot = snapshot({
+      candles: {
+        ...createInitialSnapshot("1m").candles,
+        status: "ready",
+        historyStatus: "loading",
+        interval: "1m",
+        requestId: 1,
+        candles: seed,
+      },
+    });
+    const { rerender } = render(<MarketChart snapshot={loadingSnapshot} onSelectInterval={vi.fn()} />);
+    await waitForChartMount();
+    await waitFor(() => expect(chartPort.adapter?.setCandles).toHaveBeenLastCalledWith(
+      seed,
+      expect.objectContaining({
+        reset: true,
+        historyReady: false,
+      }),
+    ));
+
+    rerender(<MarketChart snapshot={snapshot({
+      candles: {
+        ...loadingSnapshot.candles,
+        historyStatus: "ready",
+        candles: seed,
+      },
+    })} onSelectInterval={vi.fn()} />);
+
+    await waitFor(() => expect(chartPort.adapter?.setCandles).toHaveBeenLastCalledWith(
+      seed,
+      expect.objectContaining({
+        reset: false,
+        historyReady: true,
+      }),
+    ));
   });
 
   it("disables inspection controls when there are no candles", () => {
