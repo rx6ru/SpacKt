@@ -118,7 +118,11 @@ function boundaryForLocalSpecifier(fromFile: string, specifier: string): string 
 }
 
 function isAllowedExternal(boundary: string, specifier: string): boolean {
-  return (allowedExternalPrefixes[boundary] ?? []).some((prefix) => specifier === prefix || specifier.startsWith(`${prefix}/`));
+  return (allowedExternalPrefixes[boundary] ?? []).some((prefix) =>
+    prefix.endsWith("/")
+      ? specifier.startsWith(prefix) && specifier.length > prefix.length
+      : specifier === prefix || specifier.startsWith(`${prefix}/`),
+  );
 }
 
 function importBoundaryViolations(sourceText: string, filename: string): string[] {
