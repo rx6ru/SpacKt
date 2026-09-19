@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+go -C backend run ./cmd/checkrepo -root .. -mode index
+go -C backend run ./cmd/checkrepo -root .. -mode local
