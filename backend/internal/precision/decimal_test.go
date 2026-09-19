@@ -38,6 +38,40 @@ func TestParseQuantityRejectsExponentNotation(t *testing.T) {
 	}
 }
 
+func TestParsePriceRejectsMissingIntegerDigitsBeforeDecimalPoint(t *testing.T) {
+	if _, err := precision.ParsePrice(".12"); err == nil {
+		t.Fatal("ParsePrice accepted decimal text without integer digits before the point")
+	}
+}
+
+func TestParseQuantityRejectsMissingFractionalDigitsAfterDecimalPoint(t *testing.T) {
+	if _, err := precision.ParseQuantity("12."); err == nil {
+		t.Fatal("ParseQuantity accepted decimal text without fractional digits after the point")
+	}
+}
+
+func TestParsePriceRejectsSigns(t *testing.T) {
+	for _, text := range []string{"+1.00", "-1.00"} {
+		if _, err := precision.ParsePrice(text); err == nil {
+			t.Fatalf("ParsePrice accepted signed decimal text %q", text)
+		}
+	}
+}
+
+func TestParseQuantityRejectsWhitespace(t *testing.T) {
+	for _, text := range []string{" 1.0000", "1.0000 ", "\t1.0000"} {
+		if _, err := precision.ParseQuantity(text); err == nil {
+			t.Fatalf("ParseQuantity accepted decimal text with whitespace %q", text)
+		}
+	}
+}
+
+func TestParsePriceRejectsNonASCIIDigits(t *testing.T) {
+	if _, err := precision.ParsePrice("１２.34"); err == nil {
+		t.Fatal("ParsePrice accepted non-ASCII digits")
+	}
+}
+
 func TestFormatPricePreservesTwoDecimalPlaces(t *testing.T) {
 	got := precision.FormatPrice(6423050)
 	if got != "64230.50" {

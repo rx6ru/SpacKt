@@ -54,7 +54,7 @@ func parseFixed(text string, scale int) (int64, error) {
 			}
 			whole = whole*10 + digit
 		case ch == '.':
-			if seenDot {
+			if seenDot || digits == 0 {
 				return 0, errInvalidDecimal
 			}
 			seenDot = true
