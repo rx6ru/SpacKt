@@ -112,6 +112,28 @@ func TestHealthcheckUsesExplicitTargetURL(t *testing.T) {
 	}
 }
 
+func TestHealthcheckAcceptsFormattedReadinessJSON(t *testing.T) {
+	target := healthcheckTarget(t, http.StatusOK, "{\n  \"status\": \"ok\"\n}")
+
+	cmd := healthcheckCommand(t, "-healthcheck-url", target.URL+"/readyz")
+	output, err := cmd.CombinedOutput()
+
+	if err != nil {
+		t.Fatalf("healthcheck failed for formatted readiness JSON; output:\n%s", output)
+	}
+}
+
+func TestHealthcheckAcceptsEscapedReadinessJSON(t *testing.T) {
+	target := healthcheckTarget(t, http.StatusOK, `{"st\u0061tus":"\u006fk"}`)
+
+	cmd := healthcheckCommand(t, "-healthcheck-url", target.URL+"/readyz")
+	output, err := cmd.CombinedOutput()
+
+	if err != nil {
+		t.Fatalf("healthcheck failed for escaped readiness JSON; output:\n%s", output)
+	}
+}
+
 func TestHealthcheckIgnoresMarketEnvironmentSettings(t *testing.T) {
 	target := healthcheckTarget(t, http.StatusOK, `{"status":"ok"}`)
 
@@ -158,6 +180,17 @@ func TestHealthcheckRejectsMalformedReadinessBody(t *testing.T) {
 
 	if err == nil {
 		t.Fatalf("healthcheck succeeded for malformed readiness body, want non-zero exit")
+	}
+	target.assertHit(t)
+}
+
+func TestHealthcheckRejectsDuplicateStatusKeys(t *testing.T) {
+	target := healthcheckTarget(t, http.StatusOK, `{"status":"bad","status":"ok"}`)
+
+	err := runHealthcheckExpectFailure(t, target.URL+"/readyz")
+
+	if err == nil {
+		t.Fatalf("healthcheck succeeded for duplicate status keys, want non-zero exit")
 	}
 	target.assertHit(t)
 }
