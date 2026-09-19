@@ -1,0 +1,47 @@
+services:
+  - type: web
+    name: spackt-api
+    runtime: docker
+    plan: free
+    numInstances: 1
+    autoDeployTrigger: checksPass
+    dockerContext: .
+    dockerfilePath: ./backend/Dockerfile
+    healthCheckPath: /readyz
+    envVars:
+      - key: PORT
+        value: "8080"
+      - key: SPACKT_ALLOWED_ORIGINS
+        sync: false
+
+  - type: web
+    name: spackt-web
+    runtime: static
+    autoDeployTrigger: checksPass
+    rootDir: web
+    buildCommand: npm install --global npm@12.0.2 && npm ci && npm run build
+    staticPublishPath: out
+    envVars:
+      - key: NODE_VERSION
+        value: "22.23.2"
+      - key: NEXT_PUBLIC_API_URL
+        sync: false
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: no-referrer
+      - path: /
+        name: Cache-Control
+        value: no-cache
+      - path: /*.html
+        name: Cache-Control
+        value: no-cache
+      - path: /_next/static/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable

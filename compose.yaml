@@ -1,0 +1,49 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      PORT: "8080"
+      SPACKT_ALLOWED_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000"
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: [ "CMD", "/spackt-server", "-healthcheck" ]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 3
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 15s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: "http://localhost:8080"
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/" ]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /var/cache/nginx:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 10s
