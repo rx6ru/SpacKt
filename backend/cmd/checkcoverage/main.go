@@ -19,7 +19,12 @@ type Summary struct {
 	Percent float64
 }
 
-var recordPattern = regexp.MustCompile(`^.+:\d+\.\d+,\d+\.\d+ ([0-9]+) ([0-9]+)$`)
+var recordPattern = regexp.MustCompile(`^(.+:\d+\.\d+,\d+\.\d+) ([0-9]+) ([0-9]+)$`)
+
+type coverageBlock struct {
+	statements int64
+	covered    bool
+}
 
 func CheckCoverage(r io.Reader, minPercent float64) (Summary, error) {
 	var summary Summary
@@ -35,6 +40,7 @@ func CheckCoverage(r io.Reader, minPercent float64) (Summary, error) {
 	default:
 		return summary, errors.New("invalid coverage mode header")
 	}
+	blocks := make(map[string]coverageBlock)
 	line := 1
 	for scanner.Scan() {
 		line++
@@ -46,13 +52,25 @@ func CheckCoverage(r io.Reader, minPercent float64) (Summary, error) {
 		if fields == nil {
 			return summary, fmt.Errorf("invalid coverage record at line %d", line)
 		}
-		statements, err := strconv.ParseInt(fields[1], 10, 64)
+		statements, err := strconv.ParseInt(fields[2], 10, 64)
 		if err != nil {
 			return summary, fmt.Errorf("invalid statement count at line %d", line)
 		}
-		count, err := strconv.ParseUint(fields[2], 10, 64)
+		count, err := strconv.ParseUint(fields[3], 10, 64)
 		if err != nil {
 			return summary, fmt.Errorf("invalid execution count at line %d", line)
+		}
+		key := fields[1]
+		if prior, exists := blocks[key]; exists {
+			if prior.statements != statements {
+				return summary, fmt.Errorf("inconsistent statement count at line %d", line)
+			}
+			if count > 0 && !prior.covered {
+				summary.Covered += statements
+				prior.covered = true
+				blocks[key] = prior
+			}
+			continue
 		}
 		if statements > math.MaxInt64-summary.Total {
 			return summary, errors.New("coverage statement total overflows")
@@ -61,6 +79,7 @@ func CheckCoverage(r io.Reader, minPercent float64) (Summary, error) {
 		if count > 0 {
 			summary.Covered += statements
 		}
+		blocks[key] = coverageBlock{statements: statements, covered: count > 0}
 	}
 	if err := scanner.Err(); err != nil {
 		return summary, fmt.Errorf("read coverage: %w", err)

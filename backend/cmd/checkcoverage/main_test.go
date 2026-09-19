@@ -152,6 +152,37 @@ func TestCheckCoverageAcceptsAtomicModeProfile(t *testing.T) {
 	}
 }
 
+func TestCheckCoverageMergesDuplicateBlocksBeforeCalculatingWeightedCoverage(t *testing.T) {
+	summary, err := CheckCoverage(strings.NewReader(strings.Join([]string{
+		"mode: set",
+		"spackt/internal/foo/foo.go:1.1,8.2 8 0",
+		"spackt/internal/foo/foo.go:1.1,8.2 8 1",
+		"spackt/internal/foo/foo.go:9.1,10.2 2 0",
+		"spackt/internal/foo/foo.go:9.1,10.2 2 0",
+		"",
+	}, "\n")), 80)
+
+	if err != nil {
+		t.Fatalf("CheckCoverage returned error: %v", err)
+	}
+	if summary.Covered != 8 || summary.Total != 10 || summary.Percent != 80 {
+		t.Fatalf("summary = %#v, want duplicate blocks merged to 8 covered, 10 total, 80 percent", summary)
+	}
+}
+
+func TestCheckCoverageRejectsDuplicateBlockWithInconsistentStatementCount(t *testing.T) {
+	summary, err := CheckCoverage(strings.NewReader(strings.Join([]string{
+		"mode: set",
+		"spackt/internal/foo/foo.go:1.1,8.2 8 1",
+		"spackt/internal/foo/foo.go:1.1,8.2 9 1",
+		"",
+	}, "\n")), 0)
+
+	if err == nil {
+		t.Fatalf("CheckCoverage returned nil error for inconsistent duplicate block summary %#v", summary)
+	}
+}
+
 func TestRunUsesDefaultMinimumOfEighty(t *testing.T) {
 	profile := writeCoverageProfile(t, strings.Join([]string{
 		"mode: set",

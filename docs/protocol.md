@@ -77,7 +77,7 @@ Skip already-seen IDs and retain at most100 recent trades in the browser.
 
 Candle history includes the active candle if present.
 Default initial browser request is 500 candles, limited by available retained data.
-Six hours of simulated initialization gives up to 360 one-minute and 72 five-minute candles.
+Six hours span 360–361 one-minute buckets and 72–73 five-minute buckets, depending on start alignment.
 Retained duration, API limit, and initial visible range are different quantities.
 No older-history pagination endpoint is included in version1.
 
