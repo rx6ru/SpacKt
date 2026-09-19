@@ -1,3 +1,5 @@
+import { ClientEntry } from "./client-entry";
+
 export default function Home() {
-  return <main><h1>SpacKt test harness</h1></main>;
+  return <ClientEntry />;
 }

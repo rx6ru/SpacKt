@@ -1,6 +1,8 @@
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { MarketRuntimeSnapshot } from "../domain/market-view";
 
-export function createMarketStore(initial: MarketRuntimeSnapshot): StoreApi<MarketRuntimeSnapshot> {
+export type MarketStore = StoreApi<MarketRuntimeSnapshot>;
+
+export function createMarketStore(initial: MarketRuntimeSnapshot): MarketStore {
   return createStore<MarketRuntimeSnapshot>(() => initial);
 }

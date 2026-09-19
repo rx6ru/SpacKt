@@ -24,31 +24,26 @@ async function diagnostics(page: Page): Promise<Locator> {
   const dialog = page.getByRole("dialog", {
     name: "Diagnostics and debug controls",
   });
-  const regionPanel = page.getByRole("region", {
-    name: "Diagnostics and debug controls",
-  });
-  const panel = dialog.or(regionPanel).first();
 
-  if (!(await panel.isVisible().catch(() => false))) {
+  if (!(await dialog.isVisible().catch(() => false))) {
     await page.getByRole("button", { name: "Open diagnostics" }).click();
   }
 
-  await expect(dialog.or(regionPanel).first()).toBeVisible();
-  if (await dialog.isVisible().catch(() => false)) {
-    return dialog;
-  }
-  return regionPanel;
+  await expect(dialog).toBeVisible();
+  return dialog;
 }
 
 async function forceTier(panel: Locator, label: string) {
-  const field = panel.getByLabel("Force delivery tier");
+  const option = panel.getByRole("radio", { name: label });
+  await expect(option).toBeVisible();
+  await option.click();
+}
 
-  try {
-    await field.selectOption({ label }, { timeout: 1_000 });
-    return;
-  } catch {
-    await panel.getByRole("button", { name: label }).click();
-  }
+async function expectTierSelected(panel: Locator, label: string) {
+  await expect(panel.getByRole("radio", { name: label })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
 }
 
 async function fetchReferencePrice(request: APIRequestContext): Promise<string> {
@@ -63,6 +58,95 @@ function formatMoney(value: string) {
   const [integerPart, fractionPart = ""] = value.split(".");
   const grouped = integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   return `${grouped}.${fractionPart.padEnd(2, "0").slice(0, 2)}`;
+}
+
+async function expectTextContent(locator: Locator, pattern: RegExp | string) {
+  await expect(locator).toBeVisible();
+  await expect
+    .poll(async () => (await locator.textContent())?.trim() ?? "")
+    .toMatch(pattern instanceof RegExp ? pattern : new RegExp(escapeRegex(pattern)));
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function installWebSocketObserver(page: Page) {
+  await page.addInitScript(() => {
+    type SocketEvent = {
+      type: "open" | "close";
+      url: string;
+      latestPriceText: string | null;
+    };
+    const observedWindow = window as unknown as Window & {
+      __spacktSocketEvents: SocketEvent[];
+    };
+    const NativeWebSocket = window.WebSocket;
+
+    observedWindow.__spacktSocketEvents = [];
+    window.WebSocket = class ObservedWebSocket extends NativeWebSocket {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols);
+        const socketURL = String(url);
+
+        this.addEventListener("open", () => {
+          observedWindow.__spacktSocketEvents.push({
+            type: "open",
+            url: socketURL,
+            latestPriceText: null,
+          });
+        });
+        this.addEventListener("close", () => {
+          observedWindow.__spacktSocketEvents.push({
+            type: "close",
+            url: socketURL,
+            latestPriceText:
+              document
+                .querySelector('[aria-label="Latest price"]')
+                ?.textContent?.trim() ?? null,
+          });
+        });
+      }
+    };
+  });
+}
+
+async function socketEventCount(page: Page, type: "open" | "close") {
+  return page.evaluate((eventType) => {
+    const observedWindow = window as Window & {
+      __spacktSocketEvents?: Array<{
+        type: "open" | "close";
+        url: string;
+        latestPriceText: string | null;
+      }>;
+    };
+
+    return (observedWindow.__spacktSocketEvents ?? []).filter(
+      (event) => event.type === eventType,
+    ).length;
+  }, type);
+}
+
+async function socketCloseLatestPrice(page: Page, closeIndex: number) {
+  return page.evaluate((index) => {
+    const observedWindow = window as Window & {
+      __spacktSocketEvents?: Array<{
+        type: "open" | "close";
+        url: string;
+        latestPriceText: string | null;
+      }>;
+    };
+
+    return (observedWindow.__spacktSocketEvents ?? []).filter(
+      (event) => event.type === "close",
+    )[index]?.latestPriceText ?? null;
+  }, closeIndex);
+}
+
+async function activeElementIsInside(locator: Locator) {
+  return locator.evaluate((element) =>
+    Boolean(document.activeElement && element.contains(document.activeElement)),
+  );
 }
 
 test("shows all required market regions", async ({ page }) => {
@@ -88,8 +172,8 @@ test("shows live BTC-USD price and ten book rows per side", async ({
   const summary = region(page, "Market summary");
   await expect(summary.getByText("BTC-USD")).toBeVisible();
   await expect(summary.getByText("From session start")).toBeVisible();
-  await expect(summary.getByText(`Reference price ${referencePrice}`)).toBeVisible();
-  await expect(summary.getByText(moneyText)).toBeVisible();
+  await expectTextContent(summary.getByLabel("Reference price"), referencePrice);
+  await expectTextContent(summary.getByLabel("Latest price"), moneyText);
 
   const book = region(page, "Order book");
   await expect(book.getByText("Spread")).toBeVisible();
@@ -102,29 +186,70 @@ test("switches chart intervals with pressed state", async ({ page }) => {
   await gotoMarket(page);
 
   const chart = region(page, "Candlestick chart");
-  await expect(chart.getByRole("group", { name: "Chart interval" })).toBeVisible();
-  await expect(chart.getByRole("button", { name: "1m" })).toHaveAttribute(
-    "aria-pressed",
+  const intervalGroup = chart.getByRole("radiogroup", { name: "Chart interval" });
+  const oneSecond = chart.getByRole("radio", { name: "1s" });
+  const oneMinute = chart.getByRole("radio", { name: "1m" });
+  const fiveMinute = chart.getByRole("radio", { name: "5m" });
+
+  await expect(intervalGroup).toBeVisible();
+  await expect(oneMinute).toHaveAttribute(
+    "aria-checked",
     "true",
   );
 
-  await chart.getByRole("button", { name: "1s" }).click();
-  await expect(chart.getByRole("button", { name: "1s" })).toHaveAttribute(
-    "aria-pressed",
+  await oneMinute.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(fiveMinute).toBeFocused();
+  await expect(oneMinute).toHaveAttribute("aria-checked", "true");
+
+  await page.keyboard.press("Space");
+  await expect(fiveMinute).toHaveAttribute(
+    "aria-checked",
     "true",
   );
 
-  await chart.getByRole("button", { name: "5m" }).click();
-  await expect(chart.getByRole("button", { name: "5m" })).toHaveAttribute(
-    "aria-pressed",
+  await oneSecond.click();
+  await expect(oneSecond).toHaveAttribute(
+    "aria-checked",
     "true",
   );
 
-  await chart.getByRole("button", { name: "1m" }).click();
-  await expect(chart.getByRole("button", { name: "1m" })).toHaveAttribute(
-    "aria-pressed",
+  await oneMinute.click();
+  await expect(oneMinute).toHaveAttribute(
+    "aria-checked",
     "true",
   );
+});
+
+test("traps diagnostics focus and returns it on Escape", async ({ page }) => {
+  await gotoMarket(page);
+
+  const trigger = page.getByRole("button", { name: "Open diagnostics" });
+  await trigger.click();
+
+  const dialog = page.getByRole("dialog", {
+    name: "Diagnostics and debug controls",
+  });
+  await expect(dialog).toBeVisible();
+
+  const closeButton = dialog.getByRole("button", { name: "Close diagnostics" });
+  await closeButton.focus();
+  await expect(closeButton).toBeFocused();
+
+  await expect
+    .poll(async () => activeElementIsInside(dialog))
+    .toBe(true);
+
+  await page.keyboard.press("Tab");
+  await expect.poll(async () => activeElementIsInside(dialog)).toBe(true);
+
+  await closeButton.focus();
+  await page.keyboard.press("Shift+Tab");
+  await expect.poll(async () => activeElementIsInside(dialog)).toBe(true);
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
 });
 
 test("supports keyboard candle inspection", async ({ page }) => {
@@ -137,6 +262,12 @@ test("supports keyboard candle inspection", async ({ page }) => {
   await expect(chart.getByText(/\bL\b/)).toBeVisible();
   await expect(chart.getByText(/\bC\b/)).toBeVisible();
   await expect(chart.getByText(/\bV\b/)).toBeVisible();
+  await expect(
+    chart
+      .locator(".legend-cell")
+      .filter({ has: page.getByText("C", { exact: true }) })
+      .locator("strong"),
+  ).toHaveText(moneyText, { timeout: 20_000 });
 
   await chart.getByRole("button", { name: "Previous candle" }).press("Enter");
   await expect(chart.getByText(/Inspecting candle/)).toBeVisible();
@@ -155,6 +286,13 @@ test("separates configured and observed delivery rates", async ({ page }) => {
   await expect(status.getByText("Observed")).toBeVisible();
   await expect(status.getByText("RTT")).toBeVisible();
   await expect(status.getByText("Jitter")).toBeVisible();
+  await expect.poll(async () => (await status.textContent()) ?? "").toMatch(/Live/);
+  await expect
+    .poll(async () => (await status.textContent()) ?? "", { timeout: 20_000 })
+    .toMatch(/RTT[\s\S]*\d+(?:\.\d+)?\s*ms/);
+  await expect
+    .poll(async () => (await status.textContent()) ?? "", { timeout: 20_000 })
+    .toMatch(/Observed[\s\S]*\d+(?:\.\d+)?\s*\/s/);
 
   const panel = await diagnostics(page);
   await expect(panel.getByText(/Configured target|Target/)).toBeVisible();
@@ -168,33 +306,82 @@ test("forces each delivery tier and returns to auto", async ({ page }) => {
 
   await forceTier(panel, "Full");
   await expect(panel.getByText(/Forced full\. Auto would be/)).toBeVisible();
+  await expectTierSelected(panel, "Full");
   await page.waitForTimeout(1_050);
 
   await forceTier(panel, "Degraded");
   await expect(panel.getByText(/Forced degraded\. Auto would be/)).toBeVisible();
+  await expectTierSelected(panel, "Degraded");
   await page.waitForTimeout(1_050);
 
   await forceTier(panel, "Minimal");
   await expect(panel.getByText(/Forced minimal\. Auto would be/)).toBeVisible();
+  await expectTierSelected(panel, "Minimal");
   await expect(panel.getByText(/Configured target|Target/)).toBeVisible();
   await expect(panel.getByText(/Observed/)).toBeVisible();
   await page.waitForTimeout(1_050);
 
   await forceTier(panel, "Auto");
-  await expect(panel.getByText(/Forced (full|degraded|minimal)\. Auto would be/)).toHaveCount(0);
+  await expectTierSelected(panel, "Auto");
+  await expect(panel.getByText(/Forced (full|degraded|minimal)\. Auto would be/)).toBeHidden();
 });
 
-test("shows cached stale data after disconnect and recovers", async ({ page }) => {
+test("shows cached stale data after disconnect and recovers", async ({ page, request }) => {
+  await installWebSocketObserver(page);
   await gotoMarket(page);
 
   const summary = region(page, "Market summary");
-  await expect(summary.getByText(moneyText)).toBeVisible();
+  const status = region(page, "Connection and delivery");
+  const latestPrice = summary.getByLabel("Latest price");
+  await expectTextContent(latestPrice, moneyText);
+  const openBaseline = await socketEventCount(page, "open");
+  const closeBaseline = await socketEventCount(page, "close");
+  let releaseSnapshot!: () => void;
+  const holdReplacementSnapshot = new Promise<void>((resolve) => {
+    releaseSnapshot = resolve;
+  });
+  const replacementSnapshot = page.waitForRequest((request) =>
+    request.url().startsWith(`${backendURL}/api/book`),
+  );
+  let heldReplacementSnapshot = false;
+  await page.route("**/api/book", async (route) => {
+    if (heldReplacementSnapshot) {
+      await route.continue();
+      return;
+    }
+
+    heldReplacementSnapshot = true;
+    const response = await request.get(`${backendURL}/api/book`);
+    const body = await response.text();
+    await holdReplacementSnapshot;
+    await route
+      .fulfill({
+        status: response.status(),
+        headers: await response.headers(),
+        body,
+      })
+      .catch(() => undefined);
+  });
 
   const panel = await diagnostics(page);
   await panel.getByRole("button", { name: "Disconnect this session" }).click();
+  await panel.getByRole("button", { name: "Close diagnostics" }).click();
+  await expect(panel).toBeHidden();
 
-  await expect(page.getByText(/Stale since|Reconnecting in|Offline/)).toBeVisible();
-  await expect(summary.getByText(moneyText)).toBeVisible();
+  await expect
+    .poll(async () => socketEventCount(page, "close"))
+    .toBeGreaterThan(closeBaseline);
+  const cachedPrice = await socketCloseLatestPrice(page, closeBaseline);
+  expect(cachedPrice).toMatch(moneyText);
+  await replacementSnapshot;
+  await expect(status.locator("strong").first()).toHaveText(/Stale|Reconnecting/);
+  await expect(status.locator("strong").first()).not.toHaveText("Live");
+  await expectTextContent(latestPrice, moneyText);
+  releaseSnapshot();
+  await page.unroute("**/api/book");
+  await expect
+    .poll(async () => socketEventCount(page, "open"))
+    .toBeGreaterThan(openBaseline);
   await expect(region(page, "Connection and delivery").getByText(/Live/)).toBeVisible({
     timeout: 20_000,
   });
@@ -207,15 +394,27 @@ test("shows book gap recovery without clearing cached rows", async ({ page }) =>
   await expect(book.getByText(/^ASK$/)).toHaveCount(10);
   await expect(book.getByText(/^BID$/)).toHaveCount(10);
 
+  const replacementSnapshot = page.waitForRequest((request) =>
+    request.url().startsWith(`${backendURL}/api/book`),
+  );
+  await page.route("**/api/book", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    await route.continue();
+  });
+
   const panel = await diagnostics(page);
   await panel.getByRole("button", { name: "Drop next book delta" }).click();
+  await panel.getByRole("button", { name: "Close diagnostics" }).click();
+  await expect(panel).toBeHidden();
 
+  await replacementSnapshot;
   await expect(
-    page.getByText(/Gap detected\. Fetching snapshot\.|Book resyncing/),
+    book.getByText(/Gap detected\. Fetching snapshot\.|Book resyncing/).first(),
   ).toBeVisible();
   await expect(book.getByText(/^ASK$/)).toHaveCount(10);
   await expect(book.getByText(/^BID$/)).toHaveCount(10);
   await expect(book.getByText(/synced/i)).toBeVisible({ timeout: 20_000 });
+  await page.unroute("**/api/book");
 });
 
 for (const viewport of [
