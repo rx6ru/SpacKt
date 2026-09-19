@@ -184,11 +184,11 @@ async function loadAdapter(
 
 function applyCandles(
   adapter: Awaited<ReturnType<typeof loadAdapter>>,
-  payload: { candles: readonly Candle[]; loading: boolean },
+  payload: { candles: readonly Candle[]; loading: boolean; historyReady: boolean },
   setChartError: (value: boolean) => void,
 ) {
   try {
-    adapter.setCandles(payload.candles, payload.loading);
+    adapter.setCandles(payload.candles, { reset: payload.loading, historyReady: payload.historyReady });
     setChartError(false);
   } catch {
     setChartError(true);
@@ -199,6 +199,7 @@ function candlesPayload(snapshot: MarketRuntimeSnapshot) {
   return {
     candles: snapshot.candles.candles,
     loading: snapshot.candles.historyStatus === "loading",
+    historyReady: snapshot.candles.historyStatus === "ready",
   };
 }
 

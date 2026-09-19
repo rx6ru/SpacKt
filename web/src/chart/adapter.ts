@@ -10,7 +10,7 @@ import {
 } from "lightweight-charts";
 
 export type CandleChartAdapter = {
-  setCandles(candles: readonly Candle[], reset?: boolean): void;
+  setCandles(candles: readonly Candle[], options?: { reset?: boolean; historyReady?: boolean }): void;
   inspect(timeMs: number | null): void;
   dispose(): void;
 };
@@ -106,14 +106,16 @@ export function mountCandleChart(
     candleByChartTime = new Map(candles.map((candle) => [candle.timeMs / 1_000, candle]));
   }
 
-  function replaceData(candles: readonly Candle[], preserveViewport: boolean): void {
-    const visibleRange = preserveViewport ? timeScale.getVisibleLogicalRange() : null;
+  function replaceData(candles: readonly Candle[]): void {
+    const visibleRange = fittedInitialContent ? timeScale.getVisibleLogicalRange() : null;
     series.setData(candles.map(toChartBar));
     if (visibleRange) {
       timeScale.setVisibleLogicalRange(visibleRange);
-      return;
     }
-    if (!fittedInitialContent) {
+  }
+
+  function fitInitialHistory(candles: readonly Candle[], historyReady: boolean): void {
+    if (!fittedInitialContent && historyReady && candles.length > 0) {
       timeScale.fitContent();
       fittedInitialContent = true;
     }
@@ -141,8 +143,12 @@ export function mountCandleChart(
   chart.subscribeCrosshairMove(handleCrosshairMove);
 
   return {
-    setCandles(candles, reset = false): void {
-      if (disposed || sameHistory(previousCandles, candles)) {
+    setCandles(candles, { reset = false, historyReady = true } = {}): void {
+      if (disposed) {
+        return;
+      }
+      if (sameHistory(previousCandles, candles)) {
+        fitInitialHistory(candles, historyReady);
         return;
       }
 
@@ -154,9 +160,10 @@ export function mountCandleChart(
       }
 
       if (reset || previousCandles.length === 0) {
-        replaceData(candles, fittedInitialContent);
+        replaceData(candles);
         previousCandles = candles;
         replaceIndexes(candles);
+        fitInitialHistory(candles, historyReady);
         return;
       }
 
@@ -174,18 +181,19 @@ export function mountCandleChart(
           .filter((index) => index >= 0);
         const [changedIndex] = changedIndexes;
         if (changedIndexes.length !== 1 || changedIndex === undefined) {
-          replaceData(candles, true);
+          replaceData(candles);
         } else if (changedIndex === candles.length - 1) {
           series.update(toChartBar(nextLast));
         } else {
           series.update(toChartBar(candles[changedIndex]), true);
         }
       } else {
-        replaceData(candles, true);
+        replaceData(candles);
       }
 
       previousCandles = candles;
       replaceIndexes(candles);
+      fitInitialHistory(candles, historyReady);
     },
     inspect(timeMs): void {
       if (disposed) {
