@@ -42,7 +42,8 @@ export class RequestOwner<T> {
     if (!this.disposed && this.task) this.start(this.task);
   }
 
-  cancel(): void {
+  cancel(options?: { preserveBudget?: boolean }): void {
+    void options;
     if (!this.disposed) this.clear();
   }
 

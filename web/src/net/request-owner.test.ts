@@ -263,6 +263,145 @@ describe("RequestOwner retry ownership", () => {
     expect(owner.getState()).toMatchObject({ status: "idle", attemptsUsed: 0 });
   });
 
+  it("default cancel clears a scheduled retry and resets the episode budget", async () => {
+    const scheduler = new FakeScheduler();
+    const owner = new RequestOwner<string>({ scheduler });
+    const first = deferred<string>();
+    owner.start({
+      load: () => first.promise,
+      accept: vi.fn(),
+    });
+
+    first.reject(new Error("offline"));
+    await flushMicrotasks();
+    expect(owner.getState()).toMatchObject({
+      status: "loading",
+      attemptsUsed: 2,
+      error: "offline",
+    });
+    expect(scheduler.pendingDelays()).toEqual([500]);
+
+    owner.cancel();
+
+    expect(scheduler.pendingCount()).toBe(0);
+    expect(owner.getState()).toMatchObject({
+      status: "idle",
+      attemptsUsed: 0,
+      error: null,
+    });
+  });
+
+  it("preserve-budget cancel clears a scheduled retry and recover uses the next delay", async () => {
+    const scheduler = new FakeScheduler();
+    const owner = new RequestOwner<string>({ scheduler });
+    const attempts = [deferred<string>(), deferred<string>()];
+    let loads = 0;
+    owner.start({
+      load: () => attempts[loads++].promise,
+      accept: vi.fn(),
+    });
+
+    attempts[0].reject(new Error("offline"));
+    await flushMicrotasks();
+    const generationBeforeCancel = owner.getState().generation;
+    expect(scheduler.pendingDelays()).toEqual([500]);
+
+    owner.cancel({ preserveBudget: true });
+
+    expect(scheduler.pendingCount()).toBe(0);
+    expect(owner.getState().generation).toBeGreaterThan(generationBeforeCancel);
+    expect(owner.getState()).toMatchObject({
+      status: "idle",
+      attemptsUsed: 2,
+      error: "offline",
+    });
+    scheduler.advanceBy(500);
+    expect(loads).toBe(1);
+
+    owner.recover();
+
+    expect(owner.getState()).toMatchObject({ status: "loading", attemptsUsed: 3 });
+    expect(scheduler.pendingDelays()).toEqual([1_000]);
+    scheduler.advanceBy(999);
+    expect(loads).toBe(1);
+    scheduler.advanceBy(1);
+    expect(loads).toBe(2);
+  });
+
+  it("preserve-budget cancel aborts active work and ignores its late success", async () => {
+    const scheduler = new FakeScheduler();
+    const owner = new RequestOwner<string>({ scheduler });
+    const attempts = [deferred<string>(), deferred<string>()];
+    const signals: AbortSignal[] = [];
+    let loads = 0;
+    const accept = vi.fn();
+    owner.start({
+      load(signal) {
+        signals.push(signal);
+        return attempts[loads++].promise;
+      },
+      accept,
+    });
+
+    attempts[0].reject(new Error("first failed"));
+    await flushMicrotasks();
+    scheduler.advanceBy(500);
+    expect(loads).toBe(2);
+    const generationBeforeCancel = owner.getState().generation;
+
+    owner.cancel({ preserveBudget: true });
+
+    expect(signals[1].aborted).toBe(true);
+    expect(owner.getState().generation).toBeGreaterThan(generationBeforeCancel);
+    expect(owner.getState()).toMatchObject({
+      status: "idle",
+      attemptsUsed: 2,
+      error: "first failed",
+    });
+    attempts[1].resolve("late");
+    await flushMicrotasks();
+    expect(accept).not.toHaveBeenCalled();
+    expect(owner.getState()).toMatchObject({
+      status: "idle",
+      attemptsUsed: 2,
+      error: "first failed",
+    });
+  });
+
+  it("preserve-budget cancel keeps an exhausted episode from automatic recovery", async () => {
+    const scheduler = new FakeScheduler();
+    const owner = new RequestOwner<string>({ scheduler });
+    const attempts = Array.from({ length: 6 }, () => deferred<string>());
+    let loads = 0;
+    owner.start({
+      load: () => attempts[loads++].promise,
+      accept: vi.fn(),
+    });
+    for (let attempt = 0; attempt < 5; attempt++) {
+      attempts[attempt].reject(new Error(`failed ${attempt}`));
+      await flushMicrotasks();
+      if (attempt < 4) {
+        scheduler.advanceBy([500, 1_000, 2_000, 4_000][attempt]);
+      }
+    }
+    expect(owner.getState()).toMatchObject({
+      status: "failed",
+      attemptsUsed: 5,
+      error: "failed 4",
+    });
+
+    owner.cancel({ preserveBudget: true });
+    owner.recover();
+
+    expect(loads).toBe(5);
+    expect(scheduler.pendingCount()).toBe(0);
+    expect(owner.getState()).toMatchObject({
+      status: "failed",
+      attemptsUsed: 5,
+      error: "failed 4",
+    });
+  });
+
   it("dispose clears a scheduled retry timer and prevents later timer work", async () => {
     const scheduler = new FakeScheduler();
     const owner = new RequestOwner<string>({ scheduler });
