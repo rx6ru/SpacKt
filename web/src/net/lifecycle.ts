@@ -211,9 +211,15 @@ export class ConnectionLifecycle {
 
     this.healthySinceMs = null;
 
+    if (event.code === 4002) {
+      this.state.status = "terminal";
+      this.state.terminalReason = "protocol_mismatch";
+      return {};
+    }
+
     if (this.state.hidden || !this.state.online) {
       this.state.status = this.state.online ? "idle" : "offline";
-      if (event.code === 4001) {
+      if (this.state.hidden) {
         this.state.hiddenClosed = true;
       }
       return {};
@@ -221,12 +227,6 @@ export class ConnectionLifecycle {
 
     if (event.code === 4001) {
       return this.openSocket(false);
-    }
-
-    if (event.code === 4002) {
-      this.state.status = "terminal";
-      this.state.terminalReason = "protocol_mismatch";
-      return {};
     }
 
     if (event.code === 4008) {

@@ -131,7 +131,7 @@ export class FreshnessMonitor {
       return {};
     }
 
-    if (this.state.lastMarketRev !== message.marketRev) {
+    if (this.state.lastMarketRev === null || message.marketRev > this.state.lastMarketRev) {
       this.state.lastMarketRev = message.marketRev;
       this.lastMarketRevAtMs = this.now();
       this.state.condition = "live";

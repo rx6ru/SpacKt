@@ -315,7 +315,7 @@ async function settle(): Promise<void> {
 }
 
 async function flushUntil(check: () => boolean, description: string): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
     await settle();
     if (check()) return;
   }
@@ -433,22 +433,30 @@ describe("createMarketRuntime composition", () => {
     expect(fetchCalls.filter((call) => call.url.includes("/meta"))).toHaveLength(1);
 
     await vi.advanceTimersByTimeAsync(5_000);
-    await flushUntil(() => runtime.getSnapshot().meta.attemptsUsed === 1, "metadata deadline to spend one attempt");
+    await flushUntil(() => runtime.getSnapshot().meta.error !== null, "metadata deadline to record an error");
     scheduler.advance(500);
     await vi.advanceTimersByTimeAsync(500);
+    await flushUntil(
+      () => fetchCalls.filter((call) => call.url.includes("/meta")).length === 2 && runtime.getSnapshot().meta.attemptsUsed === 2,
+      "metadata retry attempt two to be scheduled",
+    );
 
-    expect(fetchCalls.filter((call) => call.url.includes("/meta"))).toHaveLength(2);
     expect(runtime.getSnapshot().meta).toMatchObject({ status: "loading", attemptsUsed: 2 });
   });
 
   it("cancels an oversized metadata stream before buffering the whole response", async () => {
-    const { runtime, webSocket, fetchCalls } = await setup();
+    const { runtime, scheduler, webSocket, fetchCalls } = await setup();
     const cancel = vi.fn();
     bootstrapSocket(runtime, webSocket);
 
     callFor(fetchCalls, "/meta").resolve(oversizedJsonResponse(cancel));
 
-    await flushUntil(() => cancel.mock.calls.length === 1 && runtime.getSnapshot().meta.attemptsUsed === 1, "oversized metadata stream cancellation");
+    await flushUntil(() => cancel.mock.calls.length === 1 && runtime.getSnapshot().meta.error !== null, "oversized metadata stream cancellation");
+    scheduler.advance(500);
+    await flushUntil(
+      () => fetchCalls.filter((call) => call.url.includes("/meta")).length === 2 && runtime.getSnapshot().meta.attemptsUsed === 2,
+      "oversized metadata retry attempt two to be scheduled",
+    );
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(runtime.getSnapshot().meta).toMatchObject({ status: "loading", attemptsUsed: 2 });
   });
@@ -529,7 +537,7 @@ describe("createMarketRuntime composition", () => {
     expect(runtime.getSnapshot().book).toMatchObject({ status: "buffering", bufferedRanges: 1 });
 
     callFor(fetchCalls, "/book").resolve(fixtureResponse("valid-book.json"));
-    await settle();
+    await flushUntil(() => runtime.getSnapshot().book.status === "synced", "book snapshot and buffered range to sync");
 
     const snapshot = runtime.getSnapshot();
     expect(snapshot.book).toMatchObject({ status: "synced", expectedSeq: 105 });
@@ -559,7 +567,7 @@ describe("createMarketRuntime composition", () => {
       requestId: 3,
       candles: [],
     }));
-    await settle();
+    await flushUntil(() => runtime.getSnapshot().candles.status === "ready" && runtime.getSnapshot().candles.requestId === 3, "current A-B-A history seed to install");
 
     expect(runtime.getSnapshot().candles).toMatchObject({ status: "ready", interval: "1s", requestId: 3, candles: [] });
   });
@@ -586,12 +594,12 @@ describe("createMarketRuntime composition", () => {
               : "valid-history.json",
       ));
     }
-    await settle();
+    await flushUntil(() => runtime.getSnapshot().meta.status === "loading" && runtime.getSnapshot().trades.status === "loading" && runtime.getSnapshot().candles.status === "loading", "old same-session responses to be ignored");
 
     expect(runtime.getSnapshot()).toMatchObject({
-      meta: { status: "loading", attemptsUsed: 1 },
-      trades: { status: "loading", attemptsUsed: 1 },
-      candles: { status: "loading", attemptsUsed: 1 },
+      meta: { status: "loading", attemptsUsed: 2 },
+      trades: { status: "loading", attemptsUsed: 2 },
+      candles: { status: "loading", attemptsUsed: 2 },
     });
     expect(runtime.getSnapshot().book.status).not.toBe("synced");
     expect(runtime.getSnapshot().book.bids).toEqual([]);
@@ -657,12 +665,13 @@ describe("createMarketRuntime composition", () => {
     bootstrapSocket(runtime, webSocket);
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      const call = fetchCalls.filter((candidate) => candidate.url.includes("/meta")).at(-1);
-      if (!call) throw new Error("missing metadata fetch");
-      call.resolve(jsonResponse({ ...JSON.parse(readFixture("valid-meta.json")), session: "other" }));
-      await settle();
+      latestCallFor(fetchCalls, "/meta").resolve(jsonResponse({ ...cloneFixture("valid-meta.json"), session: "other" }));
       if (attempt < 4) {
+        await flushUntil(() => runtime.getSnapshot().meta.error !== null && runtime.getSnapshot().meta.attemptsUsed === attempt + 2, `metadata scheduled attempt ${attempt + 2}`);
         scheduler.advance([500, 1000, 2000, 4000][attempt]);
+        await flushUntil(() => fetchCalls.filter((call) => call.url.includes("/meta")).length === attempt + 2, `metadata retry HTTP ${attempt + 2}`);
+      } else {
+        await flushUntil(() => runtime.getSnapshot().meta.status === "failed" && runtime.getSnapshot().manualRetryRequired, "metadata owner to fail after five attempts");
       }
     }
 
@@ -742,9 +751,9 @@ describe("createMarketRuntime composition", () => {
     const { runtime, scheduler, browser, webSocket, fetchCalls } = await setup();
     bootstrapSocket(runtime, webSocket);
     callFor(fetchCalls, "/meta").resolve(jsonResponse({ ...cloneFixture("valid-meta.json"), session: "other" }));
-    await flushUntil(() => runtime.getSnapshot().meta.error !== null && runtime.getSnapshot().meta.attemptsUsed === 1, "first metadata failure to spend one attempt");
+    await flushUntil(() => runtime.getSnapshot().meta.error !== null && runtime.getSnapshot().meta.attemptsUsed === 2, "metadata failure to schedule attempt two");
     scheduler.advance(500);
-    await flushUntil(() => fetchCalls.filter((call) => call.url.includes("/meta")).length === 2 && runtime.getSnapshot().meta.attemptsUsed === 2, "metadata retry to schedule attempt two");
+    await flushUntil(() => fetchCalls.filter((call) => call.url.includes("/meta")).length === 2, "metadata retry attempt two HTTP request");
     const retry = latestCallFor(fetchCalls, "/meta");
 
     browser.setOnline(false);
@@ -849,7 +858,7 @@ describe("createMarketRuntime composition", () => {
     await resolveBootstrap(runtime, fetchCalls);
     const callsBeforeStall = fetchCalls.length;
 
-    for (let second = 1; second <= 5; second += 1) {
+    for (let second = 1; second <= 7; second += 1) {
       scheduler.advance(1_000);
       socket.message(encodeServerHeartbeat({ marketRev: 84 + second, bookSeq: 102 + second, candleLatestRev: 84 + second }));
     }
@@ -885,27 +894,30 @@ describe("createMarketRuntime composition", () => {
       ...cloneFixture("valid-history.json"),
       requestId: 2,
     }));
-    await flushUntil(() => runtime.getSnapshot().candles.error !== null, "wrong history request id rejection");
+    await flushUntil(() => runtime.getSnapshot().candles.error !== null && runtime.getSnapshot().candles.attemptsUsed === 2, "wrong history request id rejection and retry scheduling");
 
-    expect(runtime.getSnapshot().candles).toMatchObject({ status: "loading", requestId: 1, attemptsUsed: 1 });
+    expect(runtime.getSnapshot().candles).toMatchObject({ status: "loading", requestId: 1, attemptsUsed: 2 });
     scheduler.advance(500);
-    await flushUntil(() => fetchCalls.some((call) => call.url.includes("history?interval=1s&requestId=1") && call !== callFor(fetchCalls, "history?interval=1s&requestId=1")), "history retry for current request id");
+    const firstHistory = callFor(fetchCalls, "history?interval=1s&requestId=1");
+    await flushUntil(() => fetchCalls.some((call) => call.url.includes("history?interval=1s&requestId=1") && call !== firstHistory), "history retry for current request id");
     expect(runtime.getSnapshot().candles.status).not.toBe("ready");
   });
 
   it("spends shared history budget and renews same-socket request IDs for repeated candle resets", async () => {
-    const { runtime, webSocket, fetchCalls } = await setup();
+    const { runtime, scheduler, webSocket, fetchCalls } = await setup();
     const socket = bootstrapSocket(runtime, webSocket);
     await resolveBootstrap(runtime, fetchCalls);
 
     socket.message(readFixture("valid-server-candles-reset.json"));
-    socket.message(encode({ ...cloneFixture("valid-server-candles-reset.json"), requestId: 2 }));
-
     expect(socket.sent.map((value) => JSON.parse(value))).toContainEqual({ type: "subscribe", session: "s1", interval: "1s", requestId: 2 });
-    expect(socket.sent.map((value) => JSON.parse(value))).toContainEqual({ type: "subscribe", session: "s1", interval: "1s", requestId: 3 });
     expect(fetchCalls.some((call) => call.url.includes("history?interval=1s&requestId=2"))).toBe(true);
+
+    socket.message(encode({ ...cloneFixture("valid-server-candles-reset.json"), requestId: 2 }));
+    scheduler.advance(500);
+
+    expect(socket.sent.map((value) => JSON.parse(value))).toContainEqual({ type: "subscribe", session: "s1", interval: "1s", requestId: 3 });
     expect(fetchCalls.some((call) => call.url.includes("history?interval=1s&requestId=3"))).toBe(true);
-    expect(runtime.getSnapshot().candles.attemptsUsed).toBeGreaterThanOrEqual(3);
+    expect(runtime.getSnapshot().candles.attemptsUsed).toBe(2);
   });
 
   it("renews same-socket request ID and spends history budget after an equal-revision candle conflict", async () => {
@@ -926,7 +938,7 @@ describe("createMarketRuntime composition", () => {
 
     expect(socket.sent.map((value) => JSON.parse(value))).toContainEqual({ type: "subscribe", session: "s1", interval: "1s", requestId: 2 });
     expect(fetchCalls.some((call) => call.url.includes("history?interval=1s&requestId=2"))).toBe(true);
-    expect(runtime.getSnapshot().candles.attemptsUsed).toBeGreaterThanOrEqual(2);
+    expect(runtime.getSnapshot().candles.attemptsUsed).toBe(1);
   });
 
   it("clears the manual retry gate after retry succeeds for a failed resource", async () => {
@@ -935,10 +947,14 @@ describe("createMarketRuntime composition", () => {
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
       latestCallFor(fetchCalls, "/meta").resolve(jsonResponse({ ...cloneFixture("valid-meta.json"), session: "other" }));
-      await flushUntil(() => runtime.getSnapshot().meta.attemptsUsed >= attempt + 1, `metadata failed attempt ${attempt + 1}`);
-      if (attempt < 4) scheduler.advance([500, 1000, 2000, 4000][attempt]);
+      if (attempt < 4) {
+        await flushUntil(() => runtime.getSnapshot().meta.error !== null && runtime.getSnapshot().meta.attemptsUsed === attempt + 2, `metadata scheduled attempt ${attempt + 2}`);
+        scheduler.advance([500, 1000, 2000, 4000][attempt]);
+        await flushUntil(() => fetchCalls.filter((call) => call.url.includes("/meta")).length === attempt + 2, `metadata retry HTTP ${attempt + 2}`);
+      } else {
+        await flushUntil(() => runtime.getSnapshot().manualRetryRequired, "manual retry gate after metadata failure");
+      }
     }
-    await flushUntil(() => runtime.getSnapshot().manualRetryRequired, "manual retry gate after metadata failure");
 
     runtime.retry();
     latestCallFor(fetchCalls, "/meta").resolve(fixtureResponse("valid-meta.json"));

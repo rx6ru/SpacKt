@@ -1,4 +1,13 @@
 import type { Candle } from "../domain/model";
+import {
+  CandlestickSeries,
+  createChart,
+  type CandlestickData,
+  type ISeriesApi,
+  type MouseEventParams,
+  type Time,
+  type UTCTimestamp,
+} from "lightweight-charts";
 
 export type CandleChartAdapter = {
   setCandles(candles: readonly Candle[], reset?: boolean): void;
@@ -6,21 +15,202 @@ export type CandleChartAdapter = {
   dispose(): void;
 };
 
-export function mountCandleChart(
-  _container: HTMLElement,
-  _options: { onInspect: (candle: Candle | null) => void },
-): CandleChartAdapter {
-  void _container;
-  void _options;
+const CHART_OPTIONS = {
+  autoSize: true,
+  layout: {
+    background: { type: "solid", color: "#0B0D10" },
+    textColor: "#F4F0E7",
+    fontFamily: "Geist Mono, ui-monospace, SFMono-Regular, Menlo, monospace",
+    attributionLogo: true,
+  },
+  grid: {
+    vertLines: { color: "#2C3440" },
+    horzLines: { color: "#2C3440" },
+  },
+  rightPriceScale: {
+    borderColor: "#2C3440",
+  },
+  timeScale: {
+    borderColor: "#2C3440",
+    timeVisible: true,
+    secondsVisible: true,
+  },
+};
+
+const CANDLE_OPTIONS = {
+  upColor: "#6FD6A7",
+  downColor: "#FF7A7A",
+  borderUpColor: "#6FD6A7",
+  borderDownColor: "#FF7A7A",
+  wickUpColor: "#6FD6A7",
+  wickDownColor: "#FF7A7A",
+  priceFormat: { type: "price", precision: 2, minMove: 0.01 },
+} as const;
+
+type ChartBar = CandlestickData<UTCTimestamp>;
+type CandleSeries = ISeriesApi<"Candlestick", Time>;
+
+function toChartTime(timeMs: number): UTCTimestamp {
+  return (timeMs / 1_000) as UTCTimestamp;
+}
+
+function toChartPrice(ticks: number): number {
+  return ticks / 100;
+}
+
+function toChartBar(candle: Candle): ChartBar {
   return {
-    setCandles(): void {
-      throw new Error("Not implemented");
+    time: toChartTime(candle.timeMs),
+    open: toChartPrice(candle.openTicks),
+    high: toChartPrice(candle.highTicks),
+    low: toChartPrice(candle.lowTicks),
+    close: toChartPrice(candle.closeTicks),
+  };
+}
+
+function sameCandle(left: Candle, right: Candle): boolean {
+  return left.timeMs === right.timeMs
+    && left.openTicks === right.openTicks
+    && left.highTicks === right.highTicks
+    && left.lowTicks === right.lowTicks
+    && left.closeTicks === right.closeTicks
+    && left.volumeLots === right.volumeLots
+    && left.rev === right.rev
+    && left.closed === right.closed;
+}
+
+function sameHistory(left: readonly Candle[], right: readonly Candle[]): boolean {
+  return left.length === right.length && left.every((candle, index) => sameCandle(candle, right[index]));
+}
+
+function samePrefix(left: readonly Candle[], right: readonly Candle[], length: number): boolean {
+  return left.length >= length && right.length >= length
+    && Array.from({ length }).every((_value, index) => sameCandle(left[index], right[index]));
+}
+
+export function mountCandleChart(
+  container: HTMLElement,
+  options: { onInspect: (candle: Candle | null) => void },
+): CandleChartAdapter {
+  const chart = createChart(container, CHART_OPTIONS as Parameters<typeof createChart>[1]);
+  const series = chart.addSeries(CandlestickSeries, CANDLE_OPTIONS) as CandleSeries;
+  const timeScale = chart.timeScale();
+  let disposed = false;
+  let fittedInitialContent = false;
+  let previousCandles: readonly Candle[] = [];
+  let candleByTimeMs = new Map<number, Candle>();
+  let candleByChartTime = new Map<number, Candle>();
+
+  function replaceIndexes(candles: readonly Candle[]): void {
+    candleByTimeMs = new Map(candles.map((candle) => [candle.timeMs, candle]));
+    candleByChartTime = new Map(candles.map((candle) => [candle.timeMs / 1_000, candle]));
+  }
+
+  function replaceData(candles: readonly Candle[], preserveViewport: boolean): void {
+    const visibleRange = preserveViewport ? timeScale.getVisibleLogicalRange() : null;
+    series.setData(candles.map(toChartBar));
+    if (visibleRange) {
+      timeScale.setVisibleLogicalRange(visibleRange);
+      return;
+    }
+    if (!fittedInitialContent) {
+      timeScale.fitContent();
+      fittedInitialContent = true;
+    }
+  }
+
+  function clearData(): void {
+    series.setData([]);
+    previousCandles = [];
+    replaceIndexes([]);
+    options.onInspect(null);
+    chart.clearCrosshairPosition();
+  }
+
+  const handleCrosshairMove = (param: MouseEventParams<Time>): void => {
+    if (disposed) {
+      return;
+    }
+    if (!param.point || param.time === undefined || param.seriesData.get(series) === undefined) {
+      options.onInspect(null);
+      return;
+    }
+    options.onInspect(candleByChartTime.get(Number(param.time)) ?? null);
+  };
+
+  chart.subscribeCrosshairMove(handleCrosshairMove);
+
+  return {
+    setCandles(candles, reset = false): void {
+      if (disposed || sameHistory(previousCandles, candles)) {
+        return;
+      }
+
+      if (candles.length === 0) {
+        if (previousCandles.length > 0 || reset) {
+          clearData();
+        }
+        return;
+      }
+
+      if (reset || previousCandles.length === 0) {
+        replaceData(candles, fittedInitialContent);
+        previousCandles = candles;
+        replaceIndexes(candles);
+        return;
+      }
+
+      const previousLast = previousCandles.at(-1);
+      const nextLast = candles.at(-1);
+      if (!previousLast || !nextLast) {
+        return;
+      }
+
+      if (candles.length === previousCandles.length + 1 && samePrefix(candles, previousCandles, previousCandles.length)) {
+        series.update(toChartBar(nextLast));
+      } else if (candles.length === previousCandles.length && nextLast.timeMs === previousLast.timeMs) {
+        const changedIndexes = candles
+          .map((candle, index) => sameCandle(candle, previousCandles[index]) ? -1 : index)
+          .filter((index) => index >= 0);
+        const [changedIndex] = changedIndexes;
+        if (changedIndexes.length !== 1 || changedIndex === undefined) {
+          replaceData(candles, true);
+        } else if (changedIndex === candles.length - 1) {
+          series.update(toChartBar(nextLast));
+        } else {
+          series.update(toChartBar(candles[changedIndex]), true);
+        }
+      } else {
+        replaceData(candles, true);
+      }
+
+      previousCandles = candles;
+      replaceIndexes(candles);
     },
-    inspect(): void {
-      throw new Error("Not implemented");
+    inspect(timeMs): void {
+      if (disposed) {
+        return;
+      }
+      if (timeMs === null) {
+        options.onInspect(null);
+        chart.clearCrosshairPosition();
+        return;
+      }
+      const candle = candleByTimeMs.get(timeMs);
+      options.onInspect(candle ?? null);
+      if (candle) {
+        chart.setCrosshairPosition(toChartPrice(candle.closeTicks), toChartTime(candle.timeMs), series);
+      } else {
+        chart.clearCrosshairPosition();
+      }
     },
     dispose(): void {
-      throw new Error("Not implemented");
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      chart.unsubscribeCrosshairMove(handleCrosshairMove);
+      chart.remove();
     },
   };
 }

@@ -248,6 +248,32 @@ describe("mountCandleChart", () => {
     expect(chartPort.series.update).not.toHaveBeenCalled();
   });
 
+  it("clears rendered bars and inspection when current history becomes empty", () => {
+    const onInspect = vi.fn();
+    const adapter = mounted(onInspect);
+    adapter.setCandles([candle(1_000, 1, 10_000)], true);
+    adapter.inspect(1_000);
+    chartPort.series.setData.mockClear();
+    chartPort.chart.clearCrosshairPosition.mockClear();
+    onInspect.mockClear();
+
+    adapter.setCandles([]);
+
+    expect(chartPort.series.setData).toHaveBeenCalledWith([]);
+    expect(chartPort.chart.clearCrosshairPosition).toHaveBeenCalled();
+    expect(onInspect).toHaveBeenCalledWith(null);
+  });
+
+  it("clears rendered bars when an explicit reset has empty history", () => {
+    const adapter = mounted();
+    adapter.setCandles([candle(1_000, 1, 10_000)], true);
+    chartPort.series.setData.mockClear();
+
+    adapter.setCandles([], true);
+
+    expect(chartPort.series.setData).toHaveBeenCalledWith([]);
+  });
+
   it("maps pointer inspection to the full domain candle", () => {
     const onInspect = vi.fn();
     const adapter = mounted(onInspect);
