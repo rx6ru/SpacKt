@@ -1,7 +1,7 @@
 # SpacKt engineering documents
 
-This set defines the product before implementation.
-It is a selected planning baseline, not a claim that the application exists.
+This set defines the product contract and records implementation evidence.
+Implementation is active. Each completed phase has a report under `testing/`.
 
 | Read | Purpose |
 |---|---|
@@ -22,8 +22,8 @@ Review meaningful failures, implement GREEN, then refactor and rerun checks.
 Keep expected RED commits on isolated task branches.
 Integrate and deploy only reviewed GREEN task states.
 
-Current work stops after the complete planning set is reviewed.
-No product source, executable product tests, dependency installation, or deployment occurs during this planning turn.
+Amar authorized implementation after the planning review.
+Continue through reviewed GREEN checkpoints. External publication requires separate release authority.
 
 ## Planning verification
 
@@ -32,4 +32,5 @@ The set contains 32 product requirements, 44 UI checks, and 117 planned test cas
 All 64 nonblank assignment lines were checked against the requirements.
 Local document links and reference IDs passed validation.
 The selected text/accent contrast examples exceed 4.5:1.
-These are documentation checks. Product tests remain unwritten and unexecuted.
+Those counts describe the planning baseline. They do not claim that every product test has run.
+See [P01 evidence](testing/P01.md) for the completed contract and runner checks.

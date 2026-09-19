@@ -1,0 +1,19 @@
+{
+  "name": "spackt",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.29.1",
+  "engines": {
+    "node": ">=22.13 <25"
+  },
+  "scripts": {
+    "test:e2e": "playwright test",
+    "test:e2e:container": "playwright test",
+    "test:scripts": "node --test scripts/*.test.mjs",
+    "verify:docs": "node scripts/verify-docs.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  },
+  "type": "module"
+}

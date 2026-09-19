@@ -1,6 +1,6 @@
 # Version 1 wire schemas
 
-Status: planning contract, not executable validators.
+Status: version 1 contract. Go and TypeScript validators are implemented in P01.
 This document defines exact transmitted shapes. [Protocol](protocol.md) defines their behaviour.
 Changes require matching Go and TypeScript fixtures before implementation changes.
 

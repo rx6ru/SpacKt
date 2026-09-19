@@ -1,0 +1,1 @@
+{"type":"update","session":"s1","marketRev":84,"book":{"from":101,"to":104,"bids":[["99.00","1.0000"]],"asks":[]},"candles":{"requestId":3,"interval":"1s","items":[{"t":1700000000000,"o":"100.00","h":"104.00","l":"99.00","c":"99.00","v":"6.0000","rev":84,"closed":true}]},"trades":[{"id":8,"t":1700000000800,"p":"99.00","q":"3.0000","side":"sell"}],"skipped":0}
