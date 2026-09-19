@@ -59,6 +59,7 @@ export type BookView = {
 
 export type CandleView = {
   status: "idle" | "loading" | "ready" | "invalid";
+  historyStatus: ResourceStatus;
   interval: Interval | null;
   requestId: number | null;
   candles: Candle[];
@@ -75,6 +76,11 @@ export type TradesView = ResourceView<RecentTradesDomain> & {
 export type TelemetryView = {
   unresolved: number;
   timedOutIds: number[];
+  measurement?: {
+    latencyMs: number;
+    jitterMs: number;
+    samples: number;
+  } | null;
   successes: Array<{
     id: number;
     sentAtMs: number;

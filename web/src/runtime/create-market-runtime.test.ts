@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeSocket, MarketRuntime, MarketRuntimeOptions } from "./types";
 
 const fixtureRoot = join(process.cwd(), "..", "protocol", "fixtures");
@@ -26,6 +26,51 @@ function jsonResponse(value: unknown, status = 200): Response {
 
 function fixtureResponse(file: string): Response {
   return new Response(readFixture(file), { status: 200, headers: { "content-type": "application/json" } });
+}
+
+function oversizedJsonResponse(cancel: () => void): Response {
+  const encoder = new TextEncoder();
+  const chunks = [readFixture("valid-meta.json"), ...Array.from({ length: 33 }, () => " ".repeat(65_536))];
+  let index = 0;
+
+  return new Response(new ReadableStream<Uint8Array>({
+    pull(controller) {
+      const chunk = chunks[index];
+      index += 1;
+      if (chunk === undefined) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(encoder.encode(chunk));
+    },
+    cancel,
+  }), { status: 200, headers: { "content-type": "application/json" } });
+}
+
+function cloneFixture(file: string): Record<string, unknown> {
+  return JSON.parse(readFixture(file)) as Record<string, unknown>;
+}
+
+function ignoreMutationError(mutate: () => void): void {
+  try {
+    mutate();
+  } catch (error) {
+    if (!(error instanceof TypeError)) {
+      throw error;
+    }
+  }
+}
+
+function encodeServerHeartbeat(value: { marketRev: number; bookSeq?: number; candleLatestRev?: number | null; feedReady?: boolean }): string {
+  return encode({
+    type: "heartbeat",
+    session: "s1",
+    marketRev: value.marketRev,
+    bookSeq: value.bookSeq ?? 104,
+    candleRequestId: 1,
+    candleLatestRev: value.candleLatestRev ?? 84,
+    feedReady: value.feedReady ?? true,
+  });
 }
 
 function encode(value: Record<string, unknown>): string {
@@ -205,6 +250,12 @@ function createControlledFetcher(): { fetcher: typeof fetch; calls: FetchCall[] 
       resolve = res;
       reject = rej;
     });
+    const abort = () => reject(new DOMException("Aborted", "AbortError"));
+    if (init?.signal?.aborted) {
+      abort();
+    } else {
+      init?.signal?.addEventListener("abort", abort, { once: true });
+    }
     calls.push({ url: String(input), init, resolve, reject, promise });
     return promise;
   }) as typeof fetch;
@@ -299,6 +350,7 @@ async function resolveBootstrap(runtime: MarketRuntime, calls: FetchCall[], late
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const runtime of activeRuntimes.splice(0)) {
     try {
       runtime.dispose();
@@ -329,6 +381,37 @@ describe("createMarketRuntime composition", () => {
     expect(changed).toBe(beforeUnsubscribe);
   });
 
+  it("returns the same snapshot object until a committed server event changes state", async () => {
+    const { runtime, webSocket } = await setup();
+    const initial = runtime.getSnapshot();
+
+    expect(runtime.getSnapshot()).toBe(initial);
+
+    runtime.start();
+    const afterStart = runtime.getSnapshot();
+    expect(afterStart).not.toBe(initial);
+    expect(runtime.getSnapshot()).toBe(afterStart);
+
+    const socket = webSocket.latest();
+    socket.open();
+    expect(runtime.getSnapshot()).toBe(afterStart);
+
+    socket.message(readFixture("valid-server-hello.json"));
+    const afterHello = runtime.getSnapshot();
+    expect(afterHello).not.toBe(afterStart);
+    expect(runtime.getSnapshot()).toBe(afterHello);
+
+    socket.message(readFixture("valid-server-tier.json"));
+    const afterTier = runtime.getSnapshot();
+    expect(afterTier).not.toBe(afterHello);
+    expect(runtime.getSnapshot()).toBe(afterTier);
+
+    socket.message(encodeServerHeartbeat({ marketRev: 84, bookSeq: 104, candleLatestRev: 84 }));
+    const afterHeartbeat = runtime.getSnapshot();
+    expect(afterHeartbeat).not.toBe(afterTier);
+    expect(runtime.getSnapshot()).toBe(afterHeartbeat);
+  });
+
   it("opens one socket and starts metadata, trades, book, history, and subscription after hello", async () => {
     const { runtime, webSocket, fetchCalls } = await setup();
     const socket = bootstrapSocket(runtime, webSocket);
@@ -341,6 +424,33 @@ describe("createMarketRuntime composition", () => {
     ]);
     expect(socket.sent.map((value) => JSON.parse(value))).toContainEqual({ type: "subscribe", session: "s1", interval: "1s", requestId: 1 });
     expect(runtime.getSnapshot()).toMatchObject({ session: "s1", symbol: "BTC-USD", selectedInterval: "1s" });
+  });
+
+  it("retries metadata when bootstrap fetch never finishes before the five-second deadline", async () => {
+    vi.useFakeTimers();
+    const { runtime, scheduler, webSocket, fetchCalls } = await setup();
+    bootstrapSocket(runtime, webSocket);
+    expect(fetchCalls.filter((call) => call.url.includes("/meta"))).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await flushUntil(() => runtime.getSnapshot().meta.attemptsUsed === 1, "metadata deadline to spend one attempt");
+    scheduler.advance(500);
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(fetchCalls.filter((call) => call.url.includes("/meta"))).toHaveLength(2);
+    expect(runtime.getSnapshot().meta).toMatchObject({ status: "loading", attemptsUsed: 2 });
+  });
+
+  it("cancels an oversized metadata stream before buffering the whole response", async () => {
+    const { runtime, webSocket, fetchCalls } = await setup();
+    const cancel = vi.fn();
+    bootstrapSocket(runtime, webSocket);
+
+    callFor(fetchCalls, "/meta").resolve(oversizedJsonResponse(cancel));
+
+    await flushUntil(() => cancel.mock.calls.length === 1 && runtime.getSnapshot().meta.attemptsUsed === 1, "oversized metadata stream cancellation");
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(runtime.getSnapshot().meta).toMatchObject({ status: "loading", attemptsUsed: 2 });
   });
 
   it("does not wait forever when no hello arrives after opening a visible socket", async () => {
@@ -371,6 +481,44 @@ describe("createMarketRuntime composition", () => {
     expect(snapshot.book.status).toBe("synced");
     expect(snapshot.book.bids).toHaveLength(10);
     expect(snapshot.book.bids[0]).toEqual({ priceTicks: 9900, quantityLots: 20000 });
+  });
+
+  it("keeps snapshots immutable and applies live trades to both latest fields and displayed list", async () => {
+    const { runtime, webSocket, fetchCalls } = await setup();
+    const socket = bootstrapSocket(runtime, webSocket);
+    await resolveBootstrap(runtime, fetchCalls);
+
+    const heldSnapshot = runtime.getSnapshot();
+    const heldMeta = heldSnapshot.meta.value as { intervals: string[]; tierPolicy: { flushMs: { full: number } } };
+    const heldTrades = heldSnapshot.trades.value as { trades: Array<{ id: number; priceTicks: number }> };
+    ignoreMutationError(() => heldMeta.intervals.push("bad"));
+    ignoreMutationError(() => { heldMeta.tierPolicy.flushMs.full = 999; });
+    ignoreMutationError(() => { heldTrades.trades[0].priceTicks = 1; });
+    ignoreMutationError(() => heldTrades.trades.push({ id: 99, priceTicks: 1 }));
+
+    const nextSnapshot = runtime.getSnapshot();
+    expect((nextSnapshot.meta.value as { intervals: string[]; tierPolicy: { flushMs: { full: number } } })).toMatchObject({
+      intervals: ["1s", "1m", "5m"],
+      tierPolicy: { flushMs: { full: 100 } },
+    });
+    expect((nextSnapshot.trades.value as { trades: Array<{ id: number; priceTicks: number }> }).trades).toEqual([
+      expect.objectContaining({ id: 8, priceTicks: 6_423_050 }),
+    ]);
+
+    socket.message(encode({
+      type: "update",
+      session: "s1",
+      marketRev: 85,
+      trades: [{ id: 9, t: 1_700_000_000_900, p: "100.00", q: "1.0000", side: "buy" }],
+      skipped: 0,
+    }));
+
+    const tradeSnapshot = runtime.getSnapshot();
+    expect(tradeSnapshot.trades).toMatchObject({ latestTradeId: 9, latestPriceTicks: 10_000 });
+    expect((tradeSnapshot.trades.value as { trades: Array<{ id: number; priceTicks: number }> }).trades[0]).toMatchObject({
+      id: 9,
+      priceTicks: 10_000,
+    });
   });
 
   it("buffers an in-flight book range before the REST snapshot and applies it after the snapshot", async () => {
@@ -414,6 +562,45 @@ describe("createMarketRuntime composition", () => {
     await settle();
 
     expect(runtime.getSnapshot().candles).toMatchObject({ status: "ready", interval: "1s", requestId: 3, candles: [] });
+  });
+
+  it("aborts bootstrap HTTP calls on same-session disconnect and resumes attempt two after delay", async () => {
+    const { runtime, scheduler, webSocket, fetchCalls } = await setup();
+    const firstSocket = bootstrapSocket(runtime, webSocket);
+    const oldCalls = [...fetchCalls];
+    expect(oldCalls).toHaveLength(4);
+
+    firstSocket.closeFromServer(1006);
+
+    expect(oldCalls.every((call) => (call.init?.signal as AbortSignal).aborted)).toBe(true);
+    scheduler.advance(0);
+    const secondSocket = webSocket.latest();
+    secondSocket.open();
+    secondSocket.message(readFixture("valid-server-hello.json"));
+
+    for (const call of oldCalls) {
+      call.resolve(fixtureResponse(
+        call.url.includes("/meta") ? "valid-meta.json"
+          : call.url.includes("/book") ? "valid-book.json"
+            : call.url.includes("/trades") ? "valid-trades.json"
+              : "valid-history.json",
+      ));
+    }
+    await settle();
+
+    expect(runtime.getSnapshot()).toMatchObject({
+      meta: { status: "loading", attemptsUsed: 1 },
+      trades: { status: "loading", attemptsUsed: 1 },
+      candles: { status: "loading", attemptsUsed: 1 },
+    });
+    expect(runtime.getSnapshot().book.status).not.toBe("synced");
+    expect(runtime.getSnapshot().book.bids).toEqual([]);
+    expect(fetchCalls).toHaveLength(4);
+
+    scheduler.advance(499);
+    expect(fetchCalls).toHaveLength(4);
+    scheduler.advance(1);
+    expect(fetchCalls).toHaveLength(8);
   });
 
   it("resets session engines for a new session but preserves same-session continuity", async () => {
@@ -510,18 +697,20 @@ describe("createMarketRuntime composition", () => {
     });
   });
 
-  it("enters terminal reload-required state for unsupported hello version", async () => {
-    const { runtime, webSocket } = await setup();
+  it("closes once with 4002 for unsupported hello version and ignores later messages", async () => {
+    const { runtime, webSocket, fetchCalls } = await setup();
     runtime.start();
     const socket = webSocket.latest();
     socket.open();
-    socket.message(encode({ ...JSON.parse(readFixture("valid-server-hello.json")), v: 2 }));
+    socket.message(encode({ ...cloneFixture("valid-server-hello.json"), v: 2 }));
+    const terminalSnapshot = runtime.getSnapshot();
 
-    expect(runtime.getSnapshot()).toMatchObject({
-      reloadRequired: true,
-      connection: { status: "terminal", terminalReason: "protocol_mismatch" },
-      book: { bids: [] },
-    });
+    socket.message(readFixture("valid-server-hello.json"));
+    socket.message(readFixture("valid-server-update.json"));
+
+    expect(socket.closes).toEqual([{ code: 4002, reason: expect.any(String) }]);
+    expect(fetchCalls).toHaveLength(0);
+    expect(runtime.getSnapshot()).toEqual(terminalSnapshot);
   });
 
   it("stops probes while hidden and resumes them without sending browser-forbidden close codes", async () => {
@@ -552,16 +741,17 @@ describe("createMarketRuntime composition", () => {
   it("preserves request-owner budgets when same-session cleanup aborts in-flight bootstrap", async () => {
     const { runtime, scheduler, browser, webSocket, fetchCalls } = await setup();
     bootstrapSocket(runtime, webSocket);
-    callFor(fetchCalls, "/meta").resolve(jsonResponse({ ...JSON.parse(readFixture("valid-meta.json")), session: "other" }));
-    await flushUntil(() => runtime.getSnapshot().meta.attemptsUsed === 1, "first metadata failure to spend one attempt");
+    callFor(fetchCalls, "/meta").resolve(jsonResponse({ ...cloneFixture("valid-meta.json"), session: "other" }));
+    await flushUntil(() => runtime.getSnapshot().meta.error !== null && runtime.getSnapshot().meta.attemptsUsed === 1, "first metadata failure to spend one attempt");
     scheduler.advance(500);
+    await flushUntil(() => fetchCalls.filter((call) => call.url.includes("/meta")).length === 2 && runtime.getSnapshot().meta.attemptsUsed === 2, "metadata retry to schedule attempt two");
     const retry = latestCallFor(fetchCalls, "/meta");
 
     browser.setOnline(false);
 
     expect((retry.init?.signal as AbortSignal).aborted).toBe(true);
     expect(runtime.getSnapshot()).toMatchObject({
-      meta: { attemptsUsed: 1 },
+      meta: { attemptsUsed: 2 },
       diagnostics: { requestErrors: { meta: expect.stringMatching(/session/i) } },
     });
   });
@@ -651,6 +841,145 @@ describe("createMarketRuntime composition", () => {
       liveEligible: true,
       freshness: { condition: "live", lastMarketRev: 84 },
     });
+  });
+
+  it("resyncs local book and candle heads when heartbeats keep advertising newer data without payloads", async () => {
+    const { runtime, scheduler, webSocket, fetchCalls } = await setup();
+    const socket = bootstrapSocket(runtime, webSocket);
+    await resolveBootstrap(runtime, fetchCalls);
+    const callsBeforeStall = fetchCalls.length;
+
+    for (let second = 1; second <= 5; second += 1) {
+      scheduler.advance(1_000);
+      socket.message(encodeServerHeartbeat({ marketRev: 84 + second, bookSeq: 102 + second, candleLatestRev: 84 + second }));
+    }
+
+    expect(fetchCalls.length).toBeGreaterThan(callsBeforeStall);
+    expect(fetchCalls.some((call, index) => index >= callsBeforeStall && call.url.includes("/book"))).toBe(true);
+    expect(fetchCalls.some((call, index) => index >= callsBeforeStall && call.url.includes("history?interval=1s"))).toBe(true);
+  });
+
+  it("marks ready cached data stale and not live-eligible after an ordinary disconnect", async () => {
+    const { runtime, webSocket, fetchCalls } = await setup();
+    const socket = bootstrapSocket(runtime, webSocket);
+    await resolveBootstrap(runtime, fetchCalls);
+    socket.message(encodeServerHeartbeat({ marketRev: 84, bookSeq: 102, candleLatestRev: 84 }));
+    expect(runtime.getSnapshot().liveEligible).toBe(true);
+
+    socket.closeFromServer(1006);
+
+    expect(runtime.getSnapshot()).toMatchObject({
+      cachedStale: true,
+      liveEligible: false,
+    });
+  });
+
+  it("retries wrong-request current history and does not mark history ready from the stale response", async () => {
+    const { runtime, scheduler, webSocket, fetchCalls } = await setup();
+    const socket = bootstrapSocket(runtime, webSocket);
+    callFor(fetchCalls, "/meta").resolve(fixtureResponse("valid-meta.json"));
+    callFor(fetchCalls, "/book").resolve(fixtureResponse("valid-book.json"));
+    callFor(fetchCalls, "/trades").resolve(fixtureResponse("valid-trades.json"));
+    socket.message(readFixture("valid-server-update.json"));
+    callFor(fetchCalls, "history?interval=1s&requestId=1").resolve(jsonResponse({
+      ...cloneFixture("valid-history.json"),
+      requestId: 2,
+    }));
+    await flushUntil(() => runtime.getSnapshot().candles.error !== null, "wrong history request id rejection");
+
+    expect(runtime.getSnapshot().candles).toMatchObject({ status: "loading", requestId: 1, attemptsUsed: 1 });
+    scheduler.advance(500);
+    await flushUntil(() => fetchCalls.some((call) => call.url.includes("history?interval=1s&requestId=1") && call !== callFor(fetchCalls, "history?interval=1s&requestId=1")), "history retry for current request id");
+    expect(runtime.getSnapshot().candles.status).not.toBe("ready");
+  });
+
+  it("spends shared history budget and renews same-socket request IDs for repeated candle resets", async () => {
+    const { runtime, webSocket, fetchCalls } = await setup();
+    const socket = bootstrapSocket(runtime, webSocket);
+    await resolveBootstrap(runtime, fetchCalls);
+
+    socket.message(readFixture("valid-server-candles-reset.json"));
+    socket.message(encode({ ...cloneFixture("valid-server-candles-reset.json"), requestId: 2 }));
+
+    expect(socket.sent.map((value) => JSON.parse(value))).toContainEqual({ type: "subscribe", session: "s1", interval: "1s", requestId: 2 });
+    expect(socket.sent.map((value) => JSON.parse(value))).toContainEqual({ type: "subscribe", session: "s1", interval: "1s", requestId: 3 });
+    expect(fetchCalls.some((call) => call.url.includes("history?interval=1s&requestId=2"))).toBe(true);
+    expect(fetchCalls.some((call) => call.url.includes("history?interval=1s&requestId=3"))).toBe(true);
+    expect(runtime.getSnapshot().candles.attemptsUsed).toBeGreaterThanOrEqual(3);
+  });
+
+  it("renews same-socket request ID and spends history budget after an equal-revision candle conflict", async () => {
+    const { runtime, webSocket, fetchCalls } = await setup();
+    const socket = bootstrapSocket(runtime, webSocket);
+    await resolveBootstrap(runtime, fetchCalls);
+
+    socket.message(encode({
+      type: "update",
+      session: "s1",
+      marketRev: 85,
+      candles: {
+        requestId: 1,
+        interval: "1s",
+        items: [{ t: 1_700_000_000_000, o: "100.00", h: "104.00", l: "99.00", c: "101.00", v: "1.0000", rev: 84, closed: true }],
+      },
+    }));
+
+    expect(socket.sent.map((value) => JSON.parse(value))).toContainEqual({ type: "subscribe", session: "s1", interval: "1s", requestId: 2 });
+    expect(fetchCalls.some((call) => call.url.includes("history?interval=1s&requestId=2"))).toBe(true);
+    expect(runtime.getSnapshot().candles.attemptsUsed).toBeGreaterThanOrEqual(2);
+  });
+
+  it("clears the manual retry gate after retry succeeds for a failed resource", async () => {
+    const { runtime, scheduler, webSocket, fetchCalls } = await setup();
+    bootstrapSocket(runtime, webSocket);
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      latestCallFor(fetchCalls, "/meta").resolve(jsonResponse({ ...cloneFixture("valid-meta.json"), session: "other" }));
+      await flushUntil(() => runtime.getSnapshot().meta.attemptsUsed >= attempt + 1, `metadata failed attempt ${attempt + 1}`);
+      if (attempt < 4) scheduler.advance([500, 1000, 2000, 4000][attempt]);
+    }
+    await flushUntil(() => runtime.getSnapshot().manualRetryRequired, "manual retry gate after metadata failure");
+
+    runtime.retry();
+    latestCallFor(fetchCalls, "/meta").resolve(fixtureResponse("valid-meta.json"));
+    await flushUntil(() => runtime.getSnapshot().meta.status === "ready", "metadata retry success");
+
+    expect(runtime.getSnapshot()).toMatchObject({ manualRetryRequired: false, meta: { status: "ready", attemptsUsed: 0 } });
+  });
+
+  it("does not start extra sockets or HTTP requests when retry is invoked while hidden or offline", async () => {
+    const hidden = await setup(true, true);
+    hidden.runtime.start();
+    const hiddenSockets = hidden.webSocket.sockets.length;
+    const hiddenFetches = hidden.fetchCalls.length;
+    hidden.runtime.retry();
+    expect(hidden.webSocket.sockets).toHaveLength(hiddenSockets);
+    expect(hidden.fetchCalls).toHaveLength(hiddenFetches);
+
+    const offline = await setup(false, false);
+    offline.runtime.start();
+    const offlineSockets = offline.webSocket.sockets.length;
+    const offlineFetches = offline.fetchCalls.length;
+    offline.runtime.retry();
+    expect(offline.webSocket.sockets).toHaveLength(offlineSockets);
+    expect(offline.fetchCalls).toHaveLength(offlineFetches);
+  });
+
+  it("retains the pong for the immediate visible-return probe", async () => {
+    const { runtime, scheduler, browser, webSocket } = await setup();
+    const socket = bootstrapSocket(runtime, webSocket);
+    scheduler.advance(1_000);
+    scheduler.advance(120);
+    socket.message(encode({ type: "pong", session: "s1", id: 1 }));
+    browser.setHidden(true);
+
+    browser.setHidden(false);
+    const immediatePing = socket.sent.map((value) => JSON.parse(value)).filter((value) => value.type === "ping").at(-1);
+    expect(immediatePing).toEqual({ type: "ping", session: "s1", id: 2 });
+    scheduler.advance(80);
+    socket.message(encode({ type: "pong", session: "s1", id: 2 }));
+
+    expect(runtime.getSnapshot().telemetry.successes).toContainEqual(expect.objectContaining({ id: 2, rttMs: 80 }));
   });
 
   it("uses one monotonic clock for pongs and sends reports only after enough RTT samples", async () => {

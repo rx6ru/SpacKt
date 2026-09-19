@@ -351,3 +351,34 @@ describe("FreshnessMonitor panel head resync", () => {
     });
   });
 });
+
+describe("FreshnessMonitor monotonic producer progress", () => {
+  it("does not refresh producer progress for equal or lower heartbeat revisions", () => {
+    const { freshness, setNow } = monitor();
+
+    freshness.reset(1);
+    freshness.transportReceived(1);
+    freshness.heartbeat({ epoch: 1, marketRev: 10, flushMs: 500 });
+    setNow(4_999);
+    freshness.transportReceived(1);
+    freshness.heartbeat({ epoch: 1, marketRev: 9, flushMs: 500 });
+    const beforeOriginalLimit = freshness.advance();
+    setNow(5_000);
+    const atOriginalLimit = freshness.advance();
+
+    expect(beforeOriginalLimit.markFeedDelayed).toBeUndefined();
+    expect(atOriginalLimit.markFeedDelayed).toEqual({ epoch: 1, delayed: true });
+    expect(freshness.getState()).toMatchObject({
+      condition: "feed-delayed",
+      lastMarketRev: 10,
+    });
+
+    setNow(5_001);
+    freshness.heartbeat({ epoch: 1, marketRev: 11, flushMs: 500 });
+
+    expect(freshness.getState()).toMatchObject({
+      condition: "live",
+      lastMarketRev: 11,
+    });
+  });
+});

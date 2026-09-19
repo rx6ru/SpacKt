@@ -163,6 +163,42 @@ describe("ConnectionLifecycle reconnect policy", () => {
     expect(effects.scheduleReconnect).toBeUndefined();
   });
 
+  it("keeps hidden 4002 terminal across visible return and retry", () => {
+    const { lifecycle } = controller();
+
+    lifecycle.connect();
+    lifecycle.visibilityChanged(true);
+    const closeEffects = lifecycle.socketClosed({ code: 4002 });
+    const visibleEffects = lifecycle.visibilityChanged(false);
+    const retryEffects = lifecycle.retry();
+
+    expect(closeEffects.openSocket).toBeUndefined();
+    expect(closeEffects.scheduleReconnect).toBeUndefined();
+    expect(visibleEffects.openSocket).toBeUndefined();
+    expect(retryEffects.openSocket).toBeUndefined();
+    expect(lifecycle.getState()).toMatchObject({
+      status: "terminal",
+      terminalReason: "protocol_mismatch",
+    });
+  });
+
+  it("opens a fresh socket when visibility returns after an ordinary hidden network drop", () => {
+    const { lifecycle } = controller();
+
+    lifecycle.connect();
+    lifecycle.visibilityChanged(true);
+    const hiddenClose = lifecycle.socketClosed({ code: 1006 });
+    const visibleAgain = lifecycle.visibilityChanged(false);
+
+    expect(hiddenClose.openSocket).toBeUndefined();
+    expect(hiddenClose.scheduleReconnect).toBeUndefined();
+    expect(visibleAgain.openSocket).toEqual({ epoch: 2 });
+    expect(lifecycle.getState()).toMatchObject({
+      status: "connecting",
+      hidden: false,
+    });
+  });
+
   it("makes protocol mismatch 4002 terminal without automatic retry", () => {
     const { lifecycle } = controller();
 
