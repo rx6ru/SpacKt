@@ -262,11 +262,13 @@ Downward evidence must be confirmed by a later valid report after at least3s.
 Keep separate bad-since timers for degraded-or-worse and minimal conditions.
 Choose the worst boundary whose continuous bad evidence is confirmed.
 An intervening nonqualifying report resets that boundary's timer.
+Invalid reports also clear dwell evidence, without refreshing the last valid report time.
 Upward evidence needs10s, moves one tier, then restarts its timer.
 All evidence timers reset on reconnect and hidden/visible transition.
 
 After5s since the last valid visible report, downgrade one tier once.
 After12s, set automatic tier minimal.
+A missing-report fallback clears dwell evidence even when the automatic tier is already minimal.
 A fresh report rearms the next missing-report episode but starts fresh evidence timers after a silence fallback.
 A new connection's report deadline starts at hello.
 Hidden time pauses missing-report penalties; visible return restarts the deadline at zero.
