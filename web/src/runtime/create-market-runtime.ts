@@ -57,6 +57,7 @@ class Runtime implements MarketRuntime {
   private cachedStale = false;
   private manualBootstrap = false;
   private skipped = 0;
+  private lastCountedTradeId = 0;
   private malformedMessages = 0;
   private lastError: string | null = null;
   private lastMessageErrorAt = -Infinity;
@@ -359,7 +360,13 @@ class Runtime implements MarketRuntime {
         }
         if (message.trades) {
           this.trades.merge(message.session, message.trades);
-          this.skipped += message.skipped ?? 0;
+          const first = message.trades[0];
+          const last = message.trades.at(-1);
+          if (first && last) {
+            const unseenGap = Math.max(0, first.id - this.lastCountedTradeId - 1);
+            this.skipped += Math.min(message.skipped ?? 0, unseenGap);
+            this.lastCountedTradeId = Math.max(this.lastCountedTradeId, last.id);
+          }
         }
         this.freshness.heartbeat({ epoch, marketRev: message.marketRev, flushMs: this.tier.flushMs ?? 500 });
         this.reportApplied();
@@ -394,6 +401,7 @@ class Runtime implements MarketRuntime {
       this.candles.reset(message.session);
       this.bookError = null;
       this.skipped = 0;
+      this.lastCountedTradeId = 0;
       this.cachedStale = false;
     }
     this.bootstrap(!newSession && !this.manualBootstrap);

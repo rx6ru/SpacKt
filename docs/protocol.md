@@ -152,6 +152,9 @@ No `emptyHistory` server debug flag exists. Empty history is covered by controll
 `items` are ascending by opening time.
 `update.trades` are ascending by ID; at most50 per market flush.
 `skipped` states the number of newly unseen trade IDs omitted before the transmitted suffix.
+The server computes this value from the current connection's trade cursor.
+The browser counts each omitted ID once per backend session, including across reconnects.
+It uses a separate WebSocket trade cursor. REST arrival order does not change this count.
 Trade-list omissions do not change candle aggregation or book continuity.
 The browser retains at most100 displayed trades and reports skipped display records in diagnostics.
 

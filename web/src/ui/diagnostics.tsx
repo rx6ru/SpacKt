@@ -18,7 +18,7 @@ export function DiagnosticsDrawer({ snapshot, onDebug, onRetry }: DiagnosticsPro
   const [pongDelay, setPongDelay] = useState("0");
   const [cooldownActive, setCooldownActive] = useState(false);
   const cooldownRef = useRef<number | null>(null);
-  const disabled = cooldownActive;
+  const disabled = cooldownActive || snapshot.connection.status !== "live";
   const summary = <DiagnosticsSummary snapshot={snapshot} />;
 
   useEffect(() => {
