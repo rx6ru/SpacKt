@@ -249,6 +249,49 @@ func TestClockProgressWithoutTradeAdvancesPublicationIdentity(t *testing.T) {
 	t.Fatalf("no publication represented clock progress without a trade; last rev/id %d/%d", after.MarketRev, after.LastTradeID)
 }
 
+func TestDelayedClockTickCatchesUpElapsedLogicalSteps(t *testing.T) {
+	cfg := testConfig()
+	cfg.Step = 100 * time.Millisecond
+	owner, clock := startOwner(t, cfg)
+	defer closeOwner(t, owner)
+
+	before := currentPublication(t, owner)
+	at := clock.advance(500 * time.Millisecond)
+	clock.emitOneTick(t, at)
+
+	after := waitForPublicationRevisionAtLeast(t, owner, before.MarketRev+5)
+	if after.MarketRev != before.MarketRev+5 {
+		t.Fatalf("market revision advanced by %d, want exactly 5", after.MarketRev-before.MarketRev)
+	}
+	if after.TimeMS != before.TimeMS+500 {
+		t.Fatalf("publication time advanced by %dms, want 500ms", after.TimeMS-before.TimeMS)
+	}
+}
+
+func TestStartWithAlreadyCanceledContextReturnsContextErrorAndDoesNotBecomeReady(t *testing.T) {
+	cfg := testConfig()
+	clock := newFakeClock(cfg.EpochMS)
+	owner, err := market.NewOwner(cfg, clock)
+	if err != nil {
+		t.Fatalf("NewOwner returned error: %v", err)
+	}
+	defer closeOwner(t, owner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = owner.Start(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Start returned %v, want context.Canceled", err)
+	}
+	if owner.Ready() {
+		t.Fatalf("Ready() = true after canceled Start, want false")
+	}
+	if pub := owner.Current(); pub.Session != "" {
+		t.Fatalf("Current after canceled Start = %#v, want zero publication", pub)
+	}
+}
+
 func TestReadyFailsAfterTwoSecondsWithoutTickWhilePublicationDoesNotAdvance(t *testing.T) {
 	owner, clock := startOwner(t, testConfig())
 	defer closeOwner(t, owner)
@@ -366,6 +409,11 @@ func advanceOneTickAndWait(t *testing.T, owner *market.Owner, clock *fakeClock, 
 	t.Helper()
 	at := clock.advance(100 * time.Millisecond)
 	clock.emitOneTick(t, at)
+	return waitForPublicationRevisionGreaterThan(t, owner, before)
+}
+
+func waitForPublicationRevisionGreaterThan(t *testing.T, owner *market.Owner, before uint64) model.Publication {
+	t.Helper()
 	deadline := time.Now().Add(250 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		pub := currentPublication(t, owner)
@@ -375,6 +423,20 @@ func advanceOneTickAndWait(t *testing.T, owner *market.Owner, clock *fakeClock, 
 		runtime.Gosched()
 	}
 	t.Fatalf("market revision did not advance after one emitted tick; before %d after %d", before, currentPublication(t, owner).MarketRev)
+	return model.Publication{}
+}
+
+func waitForPublicationRevisionAtLeast(t *testing.T, owner *market.Owner, minimum uint64) model.Publication {
+	t.Helper()
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		pub := currentPublication(t, owner)
+		if pub.MarketRev >= minimum {
+			return pub
+		}
+		runtime.Gosched()
+	}
+	t.Fatalf("market revision did not reach %d; got %d", minimum, currentPublication(t, owner).MarketRev)
 	return model.Publication{}
 }
 
