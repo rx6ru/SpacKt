@@ -190,6 +190,87 @@ describe("FreshnessMonitor panel head resync", () => {
     });
   });
 
+  it("waits a full stall interval after the advertised head first moves ahead", () => {
+    const { freshness, setNow } = monitor();
+
+    freshness.reset(1);
+    freshness.transportReceived(1);
+    freshness.panelApplied({ epoch: 1, panel: "book", head: 100 });
+    freshness.heartbeat({
+      epoch: 1,
+      marketRev: 1,
+      flushMs: 500,
+      advertisedHeads: { bookSeq: 100 },
+    });
+    setNow(6_000);
+    freshness.transportReceived(1);
+    freshness.heartbeat({
+      epoch: 1,
+      marketRev: 2,
+      flushMs: 500,
+      advertisedHeads: { bookSeq: 120 },
+    });
+    const immediate = freshness.advance();
+    setNow(10_999);
+    const beforeLimit = freshness.advance();
+    setNow(11_000);
+    const atLimit = freshness.advance();
+
+    expect(immediate.resyncPanel).toBeUndefined();
+    expect(beforeLimit.resyncPanel).toBeUndefined();
+    expect(atLimit.resyncPanel).toEqual({
+      epoch: 1,
+      panel: "book",
+      reason: "advertised_head_stalled",
+    });
+  });
+
+  it("clears panel stall tracking after the local head catches up", () => {
+    const { freshness, setNow } = monitor();
+
+    freshness.reset(1);
+    freshness.transportReceived(1);
+    freshness.panelApplied({ epoch: 1, panel: "book", head: 100 });
+    freshness.heartbeat({
+      epoch: 1,
+      marketRev: 1,
+      flushMs: 500,
+      advertisedHeads: { bookSeq: 130 },
+    });
+    setNow(4_000);
+    freshness.panelApplied({ epoch: 1, panel: "book", head: 130 });
+    setNow(20_000);
+    freshness.transportReceived(1);
+    freshness.heartbeat({
+      epoch: 1,
+      marketRev: 2,
+      flushMs: 500,
+      advertisedHeads: { bookSeq: 130 },
+    });
+    const caughtUp = freshness.advance();
+    setNow(21_000);
+    freshness.heartbeat({
+      epoch: 1,
+      marketRev: 3,
+      flushMs: 500,
+      advertisedHeads: { bookSeq: 140 },
+    });
+    const firstAheadAgain = freshness.advance();
+    setNow(25_999);
+    const beforeLimit = freshness.advance();
+    setNow(26_000);
+    const atLimit = freshness.advance();
+
+    expect(caughtUp.resyncPanel).toBeUndefined();
+    expect(firstAheadAgain.resyncPanel).toBeUndefined();
+    expect(beforeLimit.resyncPanel).toBeUndefined();
+    expect(atLimit.resyncPanel).toEqual({
+      epoch: 1,
+      panel: "book",
+      reason: "advertised_head_stalled",
+    });
+  });
+
   it("ignores candle advertised heads for a noncurrent request ID", () => {
     const { freshness, setNow } = monitor();
 
@@ -220,6 +301,43 @@ describe("FreshnessMonitor panel head resync", () => {
       flushMs: 500,
       advertisedHeads: { candle: { requestId: 7, revision: 12 } },
     });
+    setNow(4_999);
+    const beforeLimit = freshness.advance();
+    setNow(5_000);
+    const atLimit = freshness.advance();
+
+    expect(beforeLimit.resyncPanel).toBeUndefined();
+    expect(atLimit.resyncPanel).toEqual({
+      epoch: 1,
+      panel: "candles",
+      reason: "advertised_head_stalled",
+    });
+  });
+
+  it("ignores candle applied progress without the current selected request ID", () => {
+    const { freshness, setNow } = monitor();
+
+    freshness.reset(1);
+    freshness.selectedCandleRequest(7);
+    freshness.panelApplied({ epoch: 1, panel: "candles", requestId: 7, head: 10 });
+    freshness.heartbeat({
+      epoch: 1,
+      marketRev: 1,
+      flushMs: 500,
+      advertisedHeads: { candle: { requestId: 7, revision: 12 } },
+    });
+    setNow(4_000);
+    freshness.panelApplied({
+      epoch: 1,
+      panel: "candles",
+      head: 11,
+    } as unknown as Parameters<FreshnessMonitor["panelApplied"]>[0]);
+    freshness.panelApplied({
+      epoch: 1,
+      panel: "candles",
+      requestId: 6,
+      head: 12,
+    } as unknown as Parameters<FreshnessMonitor["panelApplied"]>[0]);
     setNow(4_999);
     const beforeLimit = freshness.advance();
     setNow(5_000);

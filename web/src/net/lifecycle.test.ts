@@ -124,6 +124,45 @@ describe("ConnectionLifecycle reconnect policy", () => {
     expect(visibleAgain.openSocket).toEqual({ epoch: 2 });
   });
 
+  it("does not return old-epoch effects when visibility returns after a hidden 4001 close", () => {
+    const { lifecycle } = controller();
+
+    lifecycle.connect();
+    lifecycle.visibilityChanged(true);
+    lifecycle.socketClosed({ code: 4001 });
+    const effects = lifecycle.visibilityChanged(false);
+
+    expect(effects.openSocket).toEqual({ epoch: 2 });
+    const effectEpochs = [effects.sendControl?.epoch, effects.startProbes?.epoch, effects.clearEvidence?.epoch].filter(
+      (epoch): epoch is number => epoch !== undefined,
+    );
+    expect(effectEpochs).not.toContain(1);
+    for (const epoch of effectEpochs) {
+      expect(epoch).toBe(2);
+    }
+  });
+
+  it("opens a replacement socket immediately when 4001 closes a visible online socket", () => {
+    const { lifecycle } = controller();
+
+    lifecycle.connect();
+    const effects = lifecycle.socketClosed({ code: 4001 });
+
+    expect(effects.scheduleReconnect).toBeUndefined();
+    expect(effects.openSocket).toEqual({ epoch: 2 });
+  });
+
+  it("does not open a replacement socket when 4001 closes a hidden socket", () => {
+    const { lifecycle } = controller();
+
+    lifecycle.connect();
+    lifecycle.visibilityChanged(true);
+    const effects = lifecycle.socketClosed({ code: 4001 });
+
+    expect(effects.openSocket).toBeUndefined();
+    expect(effects.scheduleReconnect).toBeUndefined();
+  });
+
   it("makes protocol mismatch 4002 terminal without automatic retry", () => {
     const { lifecycle } = controller();
 
@@ -228,6 +267,30 @@ describe("ConnectionLifecycle reconnect policy", () => {
     lifecycle.connect();
     lifecycle.hello({ session: "A", protocolVersion: 1 });
     lifecycle.healthySynchronized();
+    setNow(30_000);
+    lifecycle.advance();
+    const effects = lifecycle.socketClosed({ code: 4009 });
+
+    expect(effects.scheduleReconnect).toEqual({
+      epoch: 2,
+      delayMs: 20_000,
+      reason: "payload_too_large",
+    });
+    expect(lifecycle.getState().manualRetryRequired).toBe(false);
+  });
+
+  it("keeps the original healthy start when healthy synchronized evidence repeats", () => {
+    const { lifecycle, setNow } = controller([0.25, 0.5]);
+
+    lifecycle.connect();
+    lifecycle.socketClosed({ code: 4009 });
+    lifecycle.connect();
+    lifecycle.hello({ session: "A", protocolVersion: 1 });
+    lifecycle.healthySynchronized();
+    setNow(10_000);
+    lifecycle.healthySynchronized();
+    setNow(20_000);
+    lifecycle.healthySynchronized(true);
     setNow(30_000);
     lifecycle.advance();
     const effects = lifecycle.socketClosed({ code: 4009 });

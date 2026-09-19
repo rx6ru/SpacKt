@@ -91,6 +91,13 @@ describe("fetchWire success path", () => {
     await expect(fetchWire("book", "/api/book", { fetcher })).resolves.toEqual(validBook);
   });
 
+  it("fetches and decodes an HTTP error envelope when requested", async () => {
+    const envelope = { error: { code: "bad_request", message: "Invalid request." } };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(envelope));
+
+    await expect(fetchWire("httpError", "/api/debug-error", { fetcher })).resolves.toEqual(envelope);
+  });
+
   it("omits credentials and sends only an Accept header", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(validHealth));
 
@@ -115,11 +122,50 @@ describe("fetchWire rejection path", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  it("cancels a non-2xx streaming body without replacing the primary HTTP error", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+        throw new Error("cancel failed");
+      },
+    });
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(body, { status: 503 }));
+
+    const outcome = await fetchWire("health", "/healthz", { fetcher }).then(
+      () => ({ status: "resolved" as const, error: null }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
+
+    expect(outcome.status).toBe("rejected");
+    expect(outcome.error).toBeInstanceOf(Error);
+    expect((outcome.error as Error).message).toMatch(/503|http/i);
+    expect((outcome.error as Error).message).not.toMatch(/cancel failed/i);
+    expect(cancelled).toBe(true);
+  });
+
   it("does not retry transport failures", async () => {
     const fetcher = vi.fn<typeof fetch>().mockRejectedValue(new TypeError("Network down"));
 
     await expect(fetchWire("health", "/healthz", { fetcher })).rejects.toThrow(/network down/i);
     expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects malformed UTF-8 inside an HTTP error message", async () => {
+    const prefix = new TextEncoder().encode('{"error":{"code":"bad_request","message":"');
+    const suffix = new TextEncoder().encode('"}}');
+    const invalidUtf8 = Uint8Array.of(0xc3, 0x28);
+    const bytes = concatBytes(prefix, invalidUtf8, suffix);
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(bytesResponse(bytes));
+
+    const outcome = await fetchWire("httpError", "/api/debug-error", { fetcher }).then(
+      () => ({ status: "resolved" as const, error: null }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
+
+    expect(outcome.status).toBe("rejected");
+    expect(outcome.error).toBeInstanceOf(Error);
+    expect((outcome.error as Error).message).toMatch(/utf|encoding|decode|json/i);
   });
 
   it("rejects malformed JSON", async () => {
@@ -270,14 +316,33 @@ function textResponse(body: string, init: ResponseInit = {}) {
   return new Response(streamFromText(body), init);
 }
 
+function bytesResponse(body: Uint8Array, init: ResponseInit = {}) {
+  return new Response(streamFromBytes(body), init);
+}
+
 function streamFromText(text: string) {
   const bytes = new TextEncoder().encode(text);
+  return streamFromBytes(bytes);
+}
+
+function streamFromBytes(bytes: Uint8Array) {
   return new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(bytes);
       controller.close();
     },
   });
+}
+
+function concatBytes(...chunks: Uint8Array[]) {
+  const totalLength = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
 }
 
 function delayedStream(delayMs: number, text: string) {
