@@ -73,6 +73,19 @@ function encodeServerHeartbeat(value: { marketRev: number; bookSeq?: number; can
   });
 }
 
+function encodeTradeUpdate(value: { session?: string; marketRev: number; firstId: number; lastId: number; skipped: number }): string {
+  return encode({
+    type: "update",
+    session: value.session ?? "s1",
+    marketRev: value.marketRev,
+    trades: Array.from({ length: value.lastId - value.firstId + 1 }, (_, index) => {
+      const id = value.firstId + index;
+      return { id, t: 1_700_000_000_000 + id, p: `${100 + id}.00`, q: "1.0000", side: "buy" };
+    }),
+    skipped: value.skipped,
+  });
+}
+
 function encode(value: Record<string, unknown>): string {
   return JSON.stringify(value);
 }
@@ -630,6 +643,89 @@ describe("createMarketRuntime composition", () => {
     third.open();
     third.message(encode({ ...JSON.parse(readFixture("valid-server-hello.json")), session: "s2", connId: "c3" }));
     expect(runtime.getSnapshot()).toMatchObject({ session: "s2", book: { bids: [] }, candles: { candles: [] }, trades: { latestTradeId: null } });
+  });
+
+  it("ignores stale socket and reconnect replay skipped counts already behind the trade cursor", async () => {
+    const { runtime, scheduler, webSocket, fetchCalls } = await setup();
+    const first = bootstrapSocket(runtime, webSocket);
+    await resolveBootstrap(runtime, fetchCalls);
+
+    first.message(encodeTradeUpdate({ marketRev: 90, firstId: 59, lastId: 60, skipped: 50 }));
+    expect(runtime.getSnapshot().trades).toMatchObject({ latestTradeId: 60, skippedDisplayRecords: 50 });
+
+    first.closeFromServer(1006);
+    scheduler.advance(0);
+    const second = webSocket.latest();
+    second.open();
+    second.message(encode({ ...JSON.parse(readFixture("valid-server-hello.json")), connId: "c2" }));
+
+    first.message(encodeTradeUpdate({ marketRev: 91, firstId: 61, lastId: 61, skipped: 0 }));
+    expect(runtime.getSnapshot().trades).toMatchObject({ latestTradeId: 60, skippedDisplayRecords: 50 });
+
+    second.message(encodeTradeUpdate({ marketRev: 92, firstId: 57, lastId: 60, skipped: 56 }));
+
+    expect(runtime.getSnapshot().trades).toMatchObject({ latestTradeId: 60, skippedDisplayRecords: 50 });
+  });
+
+  it("adds genuine later omissions after a same-session reconnect replay", async () => {
+    const { runtime, scheduler, webSocket, fetchCalls } = await setup();
+    const first = bootstrapSocket(runtime, webSocket);
+    await resolveBootstrap(runtime, fetchCalls);
+
+    first.message(encodeTradeUpdate({ marketRev: 90, firstId: 59, lastId: 60, skipped: 50 }));
+    first.closeFromServer(1006);
+    scheduler.advance(0);
+    const second = webSocket.latest();
+    second.open();
+    second.message(encode({ ...JSON.parse(readFixture("valid-server-hello.json")), connId: "c2" }));
+
+    second.message(encodeTradeUpdate({ marketRev: 91, firstId: 57, lastId: 60, skipped: 56 }));
+    second.message(encodeTradeUpdate({ marketRev: 92, firstId: 111, lastId: 112, skipped: 50 }));
+
+    expect(runtime.getSnapshot().trades).toMatchObject({ latestTradeId: 112, skippedDisplayRecords: 100 });
+  });
+
+  it("adds only the new part of a partially overlapped reconnect skipped range", async () => {
+    const { runtime, scheduler, webSocket, fetchCalls } = await setup();
+    const first = bootstrapSocket(runtime, webSocket);
+    await resolveBootstrap(runtime, fetchCalls);
+
+    first.message(encodeTradeUpdate({ marketRev: 90, firstId: 59, lastId: 60, skipped: 50 }));
+    first.closeFromServer(1006);
+    scheduler.advance(0);
+    const second = webSocket.latest();
+    second.open();
+    second.message(encode({ ...JSON.parse(readFixture("valid-server-hello.json")), connId: "c2" }));
+
+    second.message(encodeTradeUpdate({ marketRev: 91, firstId: 66, lastId: 66, skipped: 10 }));
+
+    expect(runtime.getSnapshot().trades).toMatchObject({ latestTradeId: 66, skippedDisplayRecords: 55 });
+  });
+
+  it("counts wire omissions when REST bootstrap has a higher latest trade id", async () => {
+    const { runtime, scheduler, webSocket, fetchCalls } = await setup();
+    const first = bootstrapSocket(runtime, webSocket);
+    callFor(fetchCalls, "/meta").resolve(fixtureResponse("valid-meta.json"));
+    callFor(fetchCalls, "/book").resolve(fixtureResponse("valid-book.json"));
+    callFor(fetchCalls, "/trades").resolve(jsonResponse({
+      session: "s1",
+      symbol: "BTC-USD",
+      trades: [{ id: 200, t: 1_700_000_000_200, p: "300.00", q: "1.0000", side: "buy" }],
+    }));
+    callFor(fetchCalls, "history?interval=1s").resolve(fixtureResponse("valid-history.json"));
+    await flushUntil(() => runtime.getSnapshot().trades.latestTradeId === 200, "high REST trade seed to install");
+
+    first.message(encodeTradeUpdate({ marketRev: 90, firstId: 59, lastId: 60, skipped: 50 }));
+    expect(runtime.getSnapshot().trades).toMatchObject({ latestTradeId: 200, skippedDisplayRecords: 50 });
+
+    first.closeFromServer(1006);
+    scheduler.advance(0);
+    const second = webSocket.latest();
+    second.open();
+    second.message(encode({ ...JSON.parse(readFixture("valid-server-hello.json")), connId: "c2" }));
+    second.message(encodeTradeUpdate({ marketRev: 91, firstId: 57, lastId: 60, skipped: 56 }));
+
+    expect(runtime.getSnapshot().trades).toMatchObject({ latestTradeId: 200, skippedDisplayRecords: 50 });
   });
 
   it("ignores old socket callbacks after a newer socket epoch opens", async () => {
