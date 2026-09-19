@@ -4,6 +4,7 @@ import {
   createChart,
   type CandlestickData,
   type ISeriesApi,
+  type LogicalRange,
   type MouseEventParams,
   type Time,
   type UTCTimestamp,
@@ -97,6 +98,8 @@ export function mountCandleChart(
   const timeScale = chart.timeScale();
   let disposed = false;
   let fittedInitialContent = false;
+  let waitingForHistory = false;
+  let recoveryViewport: LogicalRange | null = null;
   let previousCandles: readonly Candle[] = [];
   let candleByTimeMs = new Map<number, Candle>();
   let candleByChartTime = new Map<number, Candle>();
@@ -107,15 +110,26 @@ export function mountCandleChart(
   }
 
   function replaceData(candles: readonly Candle[]): void {
-    const visibleRange = fittedInitialContent ? timeScale.getVisibleLogicalRange() : null;
+    const visibleRange = fittedInitialContent && !waitingForHistory ? timeScale.getVisibleLogicalRange() : null;
     series.setData(candles.map(toChartBar));
     if (visibleRange) {
       timeScale.setVisibleLogicalRange(visibleRange);
     }
   }
 
-  function fitInitialHistory(candles: readonly Candle[], historyReady: boolean): void {
-    if (!fittedInitialContent && historyReady && candles.length > 0) {
+  function applyHistoryViewport(candles: readonly Candle[], historyReady: boolean): void {
+    if (!historyReady) return;
+    if (waitingForHistory) {
+      waitingForHistory = false;
+      const savedRange = recoveryViewport;
+      recoveryViewport = null;
+      if (savedRange && candles.length > 0) {
+        timeScale.setVisibleLogicalRange(savedRange);
+        return;
+      }
+      fittedInitialContent = false;
+    }
+    if (!fittedInitialContent && candles.length > 0) {
       timeScale.fitContent();
       fittedInitialContent = true;
     }
@@ -147,8 +161,13 @@ export function mountCandleChart(
       if (disposed) {
         return;
       }
+      if (reset && !historyReady && !waitingForHistory) {
+        waitingForHistory = true;
+        const visibleRange = fittedInitialContent ? timeScale.getVisibleLogicalRange() : null;
+        recoveryViewport = visibleRange ? { ...visibleRange } : null;
+      }
       if (sameHistory(previousCandles, candles)) {
-        fitInitialHistory(candles, historyReady);
+        applyHistoryViewport(candles, historyReady);
         return;
       }
 
@@ -156,6 +175,7 @@ export function mountCandleChart(
         if (previousCandles.length > 0 || reset) {
           clearData();
         }
+        applyHistoryViewport(candles, historyReady);
         return;
       }
 
@@ -163,7 +183,7 @@ export function mountCandleChart(
         replaceData(candles);
         previousCandles = candles;
         replaceIndexes(candles);
-        fitInitialHistory(candles, historyReady);
+        applyHistoryViewport(candles, historyReady);
         return;
       }
 
@@ -193,7 +213,7 @@ export function mountCandleChart(
 
       previousCandles = candles;
       replaceIndexes(candles);
-      fitInitialHistory(candles, historyReady);
+      applyHistoryViewport(candles, historyReady);
     },
     inspect(timeMs): void {
       if (disposed) {
