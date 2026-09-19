@@ -306,10 +306,11 @@ describe("ConnectionLifecycle reconnect policy", () => {
 
     lifecycle.connect();
     lifecycle.socketClosed({ code: 4009 });
+    setNow(15_000);
     lifecycle.connect();
     lifecycle.hello({ session: "A", protocolVersion: 1 });
     lifecycle.healthySynchronized();
-    setNow(30_000);
+    setNow(45_000);
     lifecycle.advance();
     const effects = lifecycle.socketClosed({ code: 4009 });
 
@@ -326,14 +327,15 @@ describe("ConnectionLifecycle reconnect policy", () => {
 
     lifecycle.connect();
     lifecycle.socketClosed({ code: 4009 });
+    setNow(15_000);
     lifecycle.connect();
     lifecycle.hello({ session: "A", protocolVersion: 1 });
     lifecycle.healthySynchronized();
-    setNow(10_000);
+    setNow(25_000);
     lifecycle.healthySynchronized();
-    setNow(20_000);
+    setNow(35_000);
     lifecycle.healthySynchronized(true);
-    setNow(30_000);
+    setNow(45_000);
     lifecycle.advance();
     const effects = lifecycle.socketClosed({ code: 4009 });
 
@@ -502,6 +504,26 @@ describe("ConnectionLifecycle reconnect policy", () => {
     expect(lifecycle.getState()).toMatchObject({
       status: "terminal",
       terminalReason: "protocol_mismatch",
+    });
+  });
+
+  it("keeps the pending cooldown when persisted pageshow fires before the deadline", () => {
+    const { lifecycle, setNow } = controller([0.25]);
+
+    lifecycle.connect();
+    lifecycle.socketClosed({ code: 4008 });
+    setNow(8_000);
+    const effects = lifecycle.pageShow({ persisted: true });
+
+    expect(effects.openSocket).toBeUndefined();
+    expect(effects.scheduleReconnect).toEqual({
+      epoch: 1,
+      delayMs: 7_000,
+      reason: "rate_limited",
+    });
+    expect(effects.clearEvidence).toEqual({
+      epoch: 1,
+      targets: ["rtt", "freshness"],
     });
   });
 });

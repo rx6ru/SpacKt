@@ -76,6 +76,7 @@ export class ConnectionLifecycle {
   private healthySinceMs: number | null = null;
   private reloadFreshOnNextOpen = false;
   private payloadRetryAvailable = true;
+  private pendingRetry: { deadlineMs: number; reason: string } | null = null;
 
   constructor(options: LifecycleOptions) {
     this.options = options;
@@ -84,6 +85,18 @@ export class ConnectionLifecycle {
   connect(): LifecycleEffects {
     if (!this.canOpen()) {
       return {};
+    }
+
+    if (this.pendingRetry) {
+      const delayMs = this.pendingRetry.deadlineMs - this.options.now();
+      if (delayMs > 0) {
+        this.state.status = "reconnecting";
+        return { scheduleReconnect: {
+          epoch: this.state.epoch,
+          delayMs,
+          reason: this.pendingRetry.reason,
+        } };
+      }
     }
 
     return this.openSocket(this.reloadFreshOnNextOpen);
@@ -138,9 +151,8 @@ export class ConnectionLifecycle {
       };
     }
 
-    if (this.state.hiddenClosed && this.canOpen()) {
-      this.state.hiddenClosed = false;
-      return this.openSocket(false);
+    if ((this.state.hiddenClosed || this.pendingRetry) && this.canOpen()) {
+      return this.connect();
     }
 
     return {
@@ -171,7 +183,7 @@ export class ConnectionLifecycle {
       return {};
     }
 
-    return this.openSocket(false);
+    return this.connect();
   }
 
   pageHide(event: { persisted: boolean }): LifecycleEffects {
@@ -196,7 +208,8 @@ export class ConnectionLifecycle {
       return {};
     }
 
-    const effects = this.openSocket(true);
+    this.reloadFreshOnNextOpen = true;
+    const effects = this.connect();
     effects.clearEvidence = { epoch: this.state.epoch, targets: ["rtt", "freshness"] };
     return effects;
   }
@@ -214,7 +227,27 @@ export class ConnectionLifecycle {
     if (event.code === 4002) {
       this.state.status = "terminal";
       this.state.terminalReason = "protocol_mismatch";
+      this.pendingRetry = null;
       return {};
+    }
+
+    if (event.code === 4009) {
+      this.state.staleCachedData = true;
+      this.reloadFreshOnNextOpen = true;
+
+      if (!this.payloadRetryAvailable) {
+        this.state.manualRetryRequired = true;
+        this.state.status = "idle";
+        this.pendingRetry = null;
+        return {};
+      }
+
+      this.payloadRetryAvailable = false;
+      return this.deferRetry("payload_too_large");
+    }
+
+    if (event.code === 4008) {
+      return this.deferRetry("rate_limited");
     }
 
     if (this.state.hidden || !this.state.online) {
@@ -226,25 +259,7 @@ export class ConnectionLifecycle {
     }
 
     if (event.code === 4001) {
-      return this.openSocket(false);
-    }
-
-    if (event.code === 4008) {
-      return this.scheduleReconnect(this.retryAfterDelay(), "rate_limited");
-    }
-
-    if (event.code === 4009) {
-      this.state.staleCachedData = true;
-      this.reloadFreshOnNextOpen = true;
-
-      if (!this.payloadRetryAvailable) {
-        this.state.manualRetryRequired = true;
-        this.state.status = "idle";
-        return {};
-      }
-
-      this.payloadRetryAvailable = false;
-      return this.scheduleReconnect(this.retryAfterDelay(), "payload_too_large");
+      return this.connect();
     }
 
     const capMs = Math.min(10_000, 500 * 2 ** this.state.reconnectAttempts);
@@ -282,7 +297,7 @@ export class ConnectionLifecycle {
       return this.openSocket(true);
     }
 
-    return this.openSocket(this.reloadFreshOnNextOpen);
+    return this.connect();
   }
 
   advance(): LifecycleEffects {
@@ -342,6 +357,8 @@ export class ConnectionLifecycle {
     this.state.epoch += 1;
     this.state.status = "connecting";
     this.reloadFreshOnNextOpen = false;
+    this.pendingRetry = null;
+    this.state.hiddenClosed = false;
     const openSocket: LifecycleEffects["openSocket"] = { epoch: this.state.epoch };
     if (reloadFreshState) {
       openSocket.reloadFreshState = true;
@@ -366,5 +383,13 @@ export class ConnectionLifecycle {
 
   private retryAfterDelay(): number {
     return 10_000 + Math.floor(this.options.random() * 20_000);
+  }
+
+  private deferRetry(reason: string): LifecycleEffects {
+    this.pendingRetry = { deadlineMs: this.options.now() + this.retryAfterDelay(), reason };
+    this.state.reconnectAttempts += 1;
+    this.state.status = this.state.online ? "idle" : "offline";
+    this.state.hiddenClosed = this.state.hidden;
+    return this.connect();
   }
 }
