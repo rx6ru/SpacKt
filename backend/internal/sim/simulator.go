@@ -40,6 +40,8 @@ const (
 	maxBookLots     = int64(100000)
 	targetDepth     = 20
 	maxDepth        = 50
+	maxSpreadTicks  = int64(20)
+	quoteStepRange  = 2
 )
 
 func New(config Config) *Simulator {
@@ -62,6 +64,8 @@ func New(config Config) *Simulator {
 func (s *Simulator) Next() Event {
 	eventTime := s.epochMS + s.nextIndex*s.stepMS
 	s.nextIndex++
+	preEventBook := s.book.Snapshot()
+	preEventMid := bookMidpoint(preEventBook)
 
 	var trade *model.Trade
 	var changes []book.LevelUpdate
@@ -74,6 +78,8 @@ func (s *Simulator) Next() Event {
 		changes = s.cancellation()
 	}
 
+	changes = append(changes, s.repairBook()...)
+	changes = append(changes, s.repairSpread(preEventMid, changesExposeWideSpread(preEventBook, changes))...)
 	changes = append(changes, s.repairBook()...)
 	s.rev++
 	return Event{
@@ -126,7 +132,7 @@ func (s *Simulator) limitAddition() []book.LevelUpdate {
 	if side == book.SideBid {
 		bestBid := snap.Bids[0].PriceTicks
 		bestAsk := snap.Asks[0].PriceTicks
-		price = bestBid - int64(s.rng.IntN(5))
+		price = bestBid + int64(s.rng.IntN(quoteStepRange))
 		if price >= bestAsk {
 			price = bestAsk - 1
 		}
@@ -139,7 +145,7 @@ func (s *Simulator) limitAddition() []book.LevelUpdate {
 	} else {
 		bestBid := snap.Bids[0].PriceTicks
 		bestAsk := snap.Asks[0].PriceTicks
-		price = bestAsk + int64(s.rng.IntN(5))
+		price = bestAsk - int64(s.rng.IntN(quoteStepRange))
 		if price <= bestBid {
 			price = bestBid + 1
 		}
@@ -207,6 +213,18 @@ func (s *Simulator) repairBook() []book.LevelUpdate {
 	}
 }
 
+func (s *Simulator) repairSpread(anchorMid int64, force bool) []book.LevelUpdate {
+	snap := s.book.Snapshot()
+	if len(snap.Bids) == 0 || len(snap.Asks) == 0 || (!force && snap.Asks[0].PriceTicks-snap.Bids[0].PriceTicks <= maxSpreadTicks) {
+		return nil
+	}
+
+	bidPrice, askPrice := recoveryPrices(anchorMid)
+	changes := s.apply(book.LevelUpdate{Side: book.SideBid, PriceTicks: bidPrice, QuantityLots: repairQuantity(len(snap.Bids))})
+	changes = append(changes, s.apply(book.LevelUpdate{Side: book.SideAsk, PriceTicks: askPrice, QuantityLots: repairQuantity(len(snap.Asks))})...)
+	return changes
+}
+
 func (s *Simulator) apply(update book.LevelUpdate) []book.LevelUpdate {
 	if err := s.book.Apply(update); err != nil {
 		panic("simulator generated invalid book update")
@@ -255,6 +273,75 @@ func repairPrice(snap model.BookSnapshot, side string) (int64, bool) {
 		}
 	}
 	return 0, false
+}
+
+func bookMidpoint(snap model.BookSnapshot) int64 {
+	return (snap.Bids[0].PriceTicks + snap.Asks[0].PriceTicks) / 2
+}
+
+func changesExposeWideSpread(snap model.BookSnapshot, changes []book.LevelUpdate) bool {
+	for _, change := range changes {
+		switch change.Side {
+		case book.SideBid:
+			snap.Bids = applyLevelChange(snap.Bids, change.PriceTicks, change.QuantityLots, true)
+		case book.SideAsk:
+			snap.Asks = applyLevelChange(snap.Asks, change.PriceTicks, change.QuantityLots, false)
+		}
+		if len(snap.Bids) > 0 && len(snap.Asks) > 0 && snap.Asks[0].PriceTicks-snap.Bids[0].PriceTicks > maxSpreadTicks {
+			return true
+		}
+	}
+	return false
+}
+
+func applyLevelChange(levels []model.Level, priceTicks int64, quantityLots int64, desc bool) []model.Level {
+	out := make([]model.Level, 0, len(levels)+1)
+	inserted := false
+	for _, level := range levels {
+		if level.PriceTicks == priceTicks {
+			if quantityLots > 0 {
+				out = append(out, model.Level{PriceTicks: priceTicks, QuantityLots: quantityLots})
+			}
+			inserted = true
+			continue
+		}
+		if !inserted && quantityLots > 0 && levelComesBefore(priceTicks, level.PriceTicks, desc) {
+			out = append(out, model.Level{PriceTicks: priceTicks, QuantityLots: quantityLots})
+			inserted = true
+		}
+		out = append(out, level)
+	}
+	if !inserted && quantityLots > 0 {
+		out = append(out, model.Level{PriceTicks: priceTicks, QuantityLots: quantityLots})
+	}
+	return out
+}
+
+func levelComesBefore(candidate int64, existing int64, desc bool) bool {
+	if desc {
+		return candidate > existing
+	}
+	return candidate < existing
+}
+
+func recoveryPrices(anchorMid int64) (int64, int64) {
+	bidPrice := anchorMid - maxSpreadTicks/2
+	askPrice := anchorMid + maxSpreadTicks/2
+	if bidPrice < minPriceTicks {
+		askPrice += minPriceTicks - bidPrice
+		bidPrice = minPriceTicks
+	}
+	if askPrice > maxPriceTicks {
+		bidPrice -= askPrice - maxPriceTicks
+		askPrice = maxPriceTicks
+	}
+	if bidPrice < minPriceTicks {
+		bidPrice = minPriceTicks
+	}
+	if askPrice > maxPriceTicks {
+		askPrice = maxPriceTicks
+	}
+	return bidPrice, askPrice
 }
 
 func canPlaceBid(snap model.BookSnapshot, price int64) bool {
