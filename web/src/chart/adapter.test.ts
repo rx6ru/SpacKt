@@ -279,6 +279,84 @@ describe("mountCandleChart", () => {
     expect(chartPort.timeScale.setVisibleLogicalRange).not.toHaveBeenCalled();
   });
 
+  it("restores the pre-clear user range after a loading seed clamps the chart", () => {
+    const adapter = mounted();
+    const firstHistory = Array.from({ length: 120 }, (_value, index) => candle((index + 1) * 1_000, 1, 10_000 + index));
+    const seed = candle(120_000, 2, 10_700);
+    const recoveredHistory = firstHistory.map((item, index) => index === firstHistory.length - 1 ? seed : item);
+    const userRange = { from: 80, to: 119 };
+    const seedRange = { from: -1, to: 0 };
+    let rangePhase: "before-clear" | "seed" = "before-clear";
+    chartPort.timeScale.getVisibleLogicalRange.mockImplementation(() =>
+      rangePhase === "before-clear" ? userRange : seedRange,
+    );
+    adapter.setCandles(firstHistory, resetReady);
+    adapter.setCandles([], { reset: true, historyReady: false });
+    rangePhase = "seed";
+    adapter.setCandles([seed], { reset: true, historyReady: false });
+    chartPort.timeScale.fitContent.mockClear();
+    chartPort.timeScale.setVisibleLogicalRange.mockClear();
+
+    adapter.setCandles(recoveredHistory, { reset: false, historyReady: true });
+
+    expect(chartPort.series.setData).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ time: 1 }),
+        expect.objectContaining({ time: 120 }),
+      ]),
+    );
+    expect(chartPort.timeScale.fitContent).not.toHaveBeenCalled();
+    expect(chartPort.timeScale.setVisibleLogicalRange).toHaveBeenLastCalledWith(userRange);
+  });
+
+  it("restores the pre-clear user range when the same recovered history becomes ready", () => {
+    const adapter = mounted();
+    const firstHistory = Array.from({ length: 120 }, (_value, index) => candle((index + 1) * 1_000, 1, 10_000 + index));
+    const seed = candle(120_000, 2, 10_700);
+    const recoveredHistory = firstHistory.map((item, index) => index === firstHistory.length - 1 ? seed : item);
+    const userRange = { from: 80, to: 119 };
+    const seedRange = { from: -1, to: 0 };
+    let rangePhase: "before-clear" | "seed" = "before-clear";
+    chartPort.timeScale.getVisibleLogicalRange.mockImplementation(() =>
+      rangePhase === "before-clear" ? userRange : seedRange,
+    );
+    adapter.setCandles(firstHistory, resetReady);
+    adapter.setCandles([], { reset: true, historyReady: false });
+    rangePhase = "seed";
+    adapter.setCandles([seed], { reset: true, historyReady: false });
+    adapter.setCandles(recoveredHistory, { reset: false, historyReady: false });
+    chartPort.timeScale.fitContent.mockClear();
+    chartPort.timeScale.setVisibleLogicalRange.mockClear();
+
+    adapter.setCandles(recoveredHistory, { reset: false, historyReady: true });
+
+    expect(chartPort.timeScale.fitContent).not.toHaveBeenCalled();
+    expect(chartPort.timeScale.setVisibleLogicalRange).toHaveBeenLastCalledWith(userRange);
+  });
+
+  it("fits recovered history when no pre-clear user range exists", () => {
+    const adapter = mounted();
+    const firstHistory = Array.from({ length: 120 }, (_value, index) => candle((index + 1) * 1_000, 1, 10_000 + index));
+    const seed = candle(120_000, 2, 10_700);
+    const recoveredHistory = firstHistory.map((item, index) => index === firstHistory.length - 1 ? seed : item);
+    const seedRange = { from: -1, to: 0 };
+    let rangePhase: "before-clear" | "seed" = "before-clear";
+    chartPort.timeScale.getVisibleLogicalRange.mockImplementation(() =>
+      rangePhase === "before-clear" ? null : seedRange,
+    );
+    adapter.setCandles(firstHistory, resetReady);
+    adapter.setCandles([], { reset: true, historyReady: false });
+    rangePhase = "seed";
+    adapter.setCandles([seed], { reset: true, historyReady: false });
+    chartPort.timeScale.fitContent.mockClear();
+    chartPort.timeScale.setVisibleLogicalRange.mockClear();
+
+    adapter.setCandles(recoveredHistory, { reset: false, historyReady: true });
+
+    expect(chartPort.timeScale.fitContent).toHaveBeenCalledTimes(1);
+    expect(chartPort.timeScale.setVisibleLogicalRange).not.toHaveBeenCalled();
+  });
+
   it("fits the first live candle after ready history is empty", () => {
     const adapter = mounted();
     const firstLive = candle(60_000, 1, 10_500);
