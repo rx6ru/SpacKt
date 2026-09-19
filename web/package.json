@@ -4,10 +4,11 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build --webpack",
+    "build": "next build --webpack && node scripts/secure-export.mjs out",
     "test:run": "vitest run",
+    "test:security": "node scripts/secure-export.test.mjs",
     "test:coverage": "vitest run --coverage",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit",
     "lint": "eslint .",
     "test:e2e": "playwright test",
     "test:e2e:container": "playwright test"

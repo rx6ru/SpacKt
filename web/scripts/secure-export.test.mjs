@@ -8,6 +8,17 @@ import { secureDirectory, secureHTML } from "./secure-export.mjs";
 
 const apiOrigin = "https://api.spackt.example";
 const wsOrigin = "wss://api.spackt.example";
+const invalidApiOrigins = [
+  "",
+  "https://api.spackt.example/path",
+  "https://api.spackt.example?debug=true",
+  "https://api.spackt.example#debug",
+  "http:api.spackt.example",
+  "http:/api.spackt.example",
+  "http:\\api.spackt.example",
+  "https:\\\\api.spackt.example",
+  "https://api.spackt.example\n",
+];
 const tempRoots = [];
 
 afterEach(async () => {
@@ -46,6 +57,20 @@ describe("secureHTML", () => {
 
     assert.match(policy, new RegExp(escapeRegExp(`'sha256-${sha256(first)}'`)));
     assert.match(policy, new RegExp(escapeRegExp(`'sha256-${sha256(second)}'`)));
+  });
+
+  it("hashes an inline script when a data-src attribute is present", () => {
+    const script = "console.log(1)";
+    const secured = secureHTML(pageHTML(`<script data-src="hint">${script}</script>`), apiOrigin);
+
+    assert.match(cspContent(secured), new RegExp(escapeRegExp(`'sha256-${sha256(script)}'`)));
+  });
+
+  it("hashes an inline script when another attribute value contains src text", () => {
+    const script = "console.log(2)";
+    const secured = secureHTML(pageHTML(`<script data-note="src=/hint.js">${script}</script>`), apiOrigin);
+
+    assert.match(cspContent(secured), new RegExp(escapeRegExp(`'sha256-${sha256(script)}'`)));
   });
 
   it("preserves external scripts without adding a hash for them", () => {
@@ -99,12 +124,14 @@ describe("secureHTML", () => {
     assert.match(policy, directivePattern("default-src", ["'self'"]));
   });
 
-  it("throws when the API origin is invalid", () => {
-    assert.throws(
-      () => secureHTML(pageHTML(`<script>console.log("boot")</script>`), "https://api.spackt.example/path"),
-      /origin|url|api/i,
-    );
-  });
+  for (const invalidOrigin of invalidApiOrigins) {
+    it(`throws when the API origin is invalid: ${JSON.stringify(invalidOrigin)}`, () => {
+      assert.throws(
+        () => secureHTML(pageHTML(`<script>console.log("boot")</script>`), invalidOrigin),
+        /origin|url|api/i,
+      );
+    });
+  }
 
   it("replaces one earlier generated policy when called again", () => {
     const once = secureHTML(pageHTML(`<script>console.log("boot")</script>`), apiOrigin);

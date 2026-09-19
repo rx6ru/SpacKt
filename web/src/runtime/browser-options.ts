@@ -1,4 +1,5 @@
 import type { Interval } from "../domain/model";
+import { normalizeBackendOrigin, websocketOriginFromHTTP } from "../net/backend-origin";
 import type {
   BrowserEvents,
   MarketRuntimeOptions,
@@ -10,11 +11,11 @@ import type {
 const defaultBackendURL = "http://localhost:8080";
 
 export function createBrowserRuntimeOptions(defaultInterval: Interval): MarketRuntimeOptions {
-  const apiBase = normalizeBaseURL(process.env.NEXT_PUBLIC_API_URL ?? defaultBackendURL);
+  const apiBase = normalizeBackendOrigin(process.env.NEXT_PUBLIC_API_URL ?? defaultBackendURL);
 
   return {
     urls: {
-      websocket: toWebSocketURL(apiBase),
+      websocket: `${websocketOriginFromHTTP(apiBase)}/ws`,
       meta: `${apiBase}/api/meta`,
       book: `${apiBase}/api/book`,
       trades: `${apiBase}/api/trades?limit=50`,
@@ -30,19 +31,6 @@ export function createBrowserRuntimeOptions(defaultInterval: Interval): MarketRu
     browser: browserEvents,
     random: Math.random,
   };
-}
-
-function normalizeBaseURL(value: string): string {
-  return value.replace(/\/+$/, "");
-}
-
-function toWebSocketURL(apiBase: string): string {
-  const url = new URL(apiBase);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.pathname = "/ws";
-  url.search = "";
-  url.hash = "";
-  return url.toString();
 }
 
 const browserWebSocketDriver: WebSocketDriver = {

@@ -26,8 +26,13 @@ describe("backend origin normalization", () => {
     "http://localhost:8080#health",
     "http://localhost:8080\t",
     "https://api.spackt.example\n",
+    "https://api.spackt.example/path\n",
     "ftp://api.spackt.example",
     "//api.spackt.example",
+    "http:api.spackt.example",
+    "http:/api.spackt.example",
+    "http:\\api.spackt.example",
+    "https:\\\\api.spackt.example",
     "localhost:8080",
   ])("rejects a value that is not a public HTTP origin: %s", (input) => {
     expect(() => normalizeBackendOrigin(input)).toThrow(/origin|url|api/i);
