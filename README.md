@@ -9,6 +9,7 @@ The project is under development. Live server and trading-screen integration are
 - [`backend/`](backend/) contains Go source and tests.
 - [`web/`](web/) contains the frontend, its npm lockfile, and browser tests.
 - [`docs/`](docs/README.md) describes the architecture and public protocol.
+- [`protocol/fixtures/`](protocol/fixtures/README.md) holds JSON cases shared by both validators.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) explains repository boundaries and verification.
 
 Frontend tooling runs from `web/`:
