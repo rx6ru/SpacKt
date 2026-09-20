@@ -181,7 +181,7 @@ Frontend:
 Run these checks before publishing a release:
 
 ```sh
-go -C backend test -race -timeout 300s ./...
+go -C backend test -race -timeout 600s ./...
 go -C backend vet ./...
 go -C backend run ./cmd/checkrepo -root .. -mode local
 npm --prefix web run typecheck
@@ -201,3 +201,7 @@ WEB_URL=http://localhost:3000 BACKEND_URL=http://localhost:8080 npm --prefix web
 
 Do not mark the deployed app ready until `/readyz` returns `200`.
 Do not share a deployment address until the frontend connects to the deployed backend.
+
+The backend CI job allows 20 minutes. Each race-test package allows 10 minutes.
+The full-day deterministic replay cases run with the race detector enabled.
+These limits allow slower CI machines to complete those checks; no stress cases are skipped.

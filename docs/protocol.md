@@ -41,6 +41,9 @@ BookRange = {from, to, bids: Level[], asks: Level[]}
 
 `side` is the simulated initiating trader's direction.
 A buy takes available asks. A sell takes available bids.
+A public trade is one committed fill from the internal matcher.
+Several public trades can share one timestamp when one generated command fills multiple resting orders.
+Private internal order IDs never appear in this protocol.
 Zero quantity is permitted only for removal entries in book ranges, or candle volume.
 Trades have strictly positive quantity.
 Unknown enum values, negative sizes, unsafe IDs, and nonfinite numbers are rejected.
@@ -76,7 +79,7 @@ A failed or mismatched meta response keeps price movement unready while recovery
 Fetch recent trades after hello, alongside meta, book, and history.
 Merge trade REST and socket data by ID within the session, keeping the largest ID as latest price.
 A late REST response cannot roll back a newer trade.
-Skip already-seen IDs and retain at most100 recent trades in the browser.
+Skip already-seen IDs and keep a bounded recent tape in the browser.
 
 Candle history includes the active candle if present.
 Default initial browser request is 500 candles, limited by available retained data.
@@ -159,8 +162,13 @@ The server computes this value from the current connection's trade cursor.
 The browser counts each omitted ID once per backend session, including across reconnects.
 It uses a separate WebSocket trade cursor. REST arrival order does not change this count.
 Trade-list omissions do not change candle aggregation or book continuity.
-The browser retains at most100 recent trades and renders the newest20.
-It reports omitted live trade records without treating them as packet loss.
+All matched fills enter candle calculation before recent-trade retention applies.
+The recent trade tape is not a complete execution ledger.
+The owner retains 200 recent trades.
+REST serves at most 100 and defaults to 50.
+A live flush sends at most 50.
+The browser keeps 100 recent trades. The UI shows the newest 20.
+It reports omitted live trade records with `skipped` without treating them as packet loss.
 
 ```json
 {"type":"update","session":"s1","marketRev":84,
@@ -181,7 +189,7 @@ The UI labels the target as a steady-state ceiling rather than a universal messa
 ## 7. Book correctness algorithm
 
 Each book mutation increments `seq` once for one level's replacement/removal.
-Publish the result only after one complete simulated event and its depth repair.
+Publish the result only after one complete generated command, its immediate matches, and bounded maintenance.
 Each outbound range lists every touched level in `(sentSeq,currentSeq]`, with its final absolute size.
 A net difference between endpoint states is insufficient when values reverse inside the range.
 
@@ -221,6 +229,7 @@ A failed write closes the connection; it does not retry uncertain application co
 Intervals use half-open UTC buckets: `[start,start+duration)`.
 Bucket start is `floor(tradeTime/duration)*duration`.
 Every trade contributes once to each interval.
+If several trades share one timestamp, apply them in trade ID order.
 On a bucket's first real trade, O/H/L/C equal that trade's price and volume equals its quantity.
 Subsequent trades update high, low, close, and volume.
 

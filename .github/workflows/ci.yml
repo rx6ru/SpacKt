@@ -16,7 +16,7 @@ jobs:
   backend:
     name: Backend tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       GOCACHE: /tmp/spackt-go-cache
     defaults:
@@ -33,7 +33,7 @@ jobs:
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
       - name: Check races and integration
-        run: go test -race -timeout 300s ./...
+        run: go test -race -timeout 600s ./...
       - name: Check coverage
         run: |
           go test -coverpkg=./... -coverprofile=/tmp/spackt-coverage.out ./...

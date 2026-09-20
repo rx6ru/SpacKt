@@ -61,6 +61,10 @@ Candle = {t:SafeUint, o:Price, h:Price, l:Price, c:Price,
 BookRange = {from:PositiveId, to:PositiveId, bids:Level[], asks:Level[]}
 ```
 
+A public Trade is a committed fill from the internal matcher.
+It is not a private resting order.
+Multiple trades may share one timestamp.
+
 Candle time aligns with its containing interval. Low ≤ open/close ≤ high.
 A zero-volume candle must have equal OHLC values under the chosen carry-forward policy.
 When several candles share a key, validate revisions before deduplicating.

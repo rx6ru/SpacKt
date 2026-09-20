@@ -37,6 +37,8 @@ Zustand vanilla subscriptions publish the current snapshot.
 ## Market Data And Protocol
 
 The backend simulates one `BTC-USD` market.
+It generates incoming commands and matches compatible orders immediately.
+Every committed fill becomes a public trade.
 Prices use integer cents.
 Quantities use integer `0.0001 BTC` lots.
 Wire messages send decimal strings.
@@ -83,9 +85,11 @@ It keeps 10 successful samples sent within 10 seconds.
 It reports every 2 seconds after at least two fresh samples.
 
 The backend owns tier decisions per WebSocket connection.
-The server processes every generated trade at every tier.
+The server processes every matched fill before candle calculation.
 Final candle values stay complete at every tier.
-The displayed trade list is bounded and can report omitted trades.
+The recent trade tape is intentionally bounded.
+The owner retains 200 recent trades, REST serves at most 100, a live flush sends at most 50, and the browser keeps 100 recent trades. The UI shows the newest 20.
+Omitted live trades are reported with `skipped`.
 Tiers change delivery frequency, not market generation.
 
 | Tier | Target chart cadence |
@@ -173,7 +177,7 @@ docker compose up --build --wait
 Run these checks from the repository root:
 
 ```sh
-go -C backend test -race -timeout 300s ./...
+go -C backend test -race -timeout 600s ./...
 go -C backend vet ./...
 go -C backend run ./cmd/checkrepo -root .. -mode local
 npm --prefix web run typecheck
@@ -207,7 +211,7 @@ See [docs/deployment.md](docs/deployment.md) for full deployment steps.
 
 SpacKt runs one in-memory market instance.
 A restart creates a new backend session.
-It does not place real orders, connect to a real exchange, or persist server market data.
+It does not accept real user orders, connect to a real exchange, or persist server market data.
 The watchlist contains preview rows, but only `BTC-USD` is live.
 The static frontend must be rebuilt when the backend origin changes.
 The free Render backend can sleep after 15 minutes without inbound traffic.

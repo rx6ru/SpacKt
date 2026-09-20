@@ -12,11 +12,11 @@ No authentication, database, or message broker is required for the selected read
 
 ```text
                          BACKEND
-logical clock + seeded generator
+logical clock + seeded order generator
               │
               ▼
        single market owner
-       book / trades / candles / history
+       matcher / book / trades / candles / history
               │
          copied publication ────────────────┐
               │                             │
@@ -48,7 +48,7 @@ This keeps the market independent from a slow reader without relying on a shared
 | Backend language | Go: explicit connection ownership, cancellation, race checking, and a small deployable binary | Node/TypeScript is viable and shares models; shared application logic is small here | Shared runtime logic becomes substantial or Go adds measured delivery cost |
 | HTTP routing | Standard `net/http`; few routes and standard lifecycle | chi or a larger framework adds an API without a current missing feature | Route/middleware complexity grows materially |
 | WebSocket library | `coder/websocket`; context-based calls and explicit limits | Gorilla is valid but uses different concurrency conventions; neither library proves application state safe | Actual API or maintenance evidence changes |
-| Simulator | Bounded seeded order-flow events, fixed logical steps, no stochastic-process dependency | OU/Poisson can add realism, but introduce tuning and explanations unrelated to the central grading risks | A concrete demonstration requires those distribution properties |
+| Simulator | Bounded seeded orders and cancellations, fixed logical steps, deterministic matching | OU/Poisson can add realism, but introduce tuning and explanations unrelated to the central grading risks | A concrete demonstration requires those distribution properties |
 | Market storage | Owned memory with bounded history | A database supplies durability that this invented market does not need | Real records must survive restart or support audits |
 | Delivery | Immutable current delivery view plus per-client cursors; batch all market streams | Chart-only pacing is simpler but leaves most book traffic unchanged | Measurements show batching complexity outweighs saved traffic |
 | Precision | Integer cents/ticks and quantity lots; decimal strings on wire | Decimal library supports more arbitrary scales at dependency and operation cost | Symbol precision cannot be represented with fixed configured scales |
@@ -93,9 +93,9 @@ An arrow means “may import.” It does not mean runtime message direction.
 ```text
 cmd/server → transport, market, delivery, config
 transport  → transport/wire, delivery, model, precision
-market     → sim, book, candle, model
-sim        → book, model
-book       → model
+market     → sim, candle, model
+sim        → matching, model
+matching   → model
 candle     → model
 tier       → model
 delivery   → tier, model
@@ -189,9 +189,11 @@ Application code does not expose raw database, library, or stack-trace errors to
 
 ## 3. Market owner and publication
 
-The market owner contains the random generator, book, candle aggregator, retained trades, and history.
+The market owner contains the random generator, matcher, candle aggregator, retained trades, and history.
 Only it mutates those values.
 Use an injected logical clock and random source in pure domain code.
+Owner startup captures the live schedule anchor before warmup.
+If warmup consumes clock time, the first live tick catches up the elapsed scheduled steps.
 The live pacer schedules logical work from elapsed monotonic time.
 Changing delivery or connected-client count never changes the random draw sequence.
 
@@ -214,7 +216,7 @@ The immutable delivery view contains:
 Nested arrays and maps are immutable after publication.
 An atomic pointer swap alone does not enforce that rule.
 Use owned copies; verify aliasing and slow-reader cases.
-Avoid publishing intermediate book changes before replenishment restores required depth.
+Avoid publishing intermediate book changes before maintenance restores required depth.
 
 Full REST candle history is not copied into every delivery publication.
 REST submits a bounded capture request to the market owner.
@@ -227,33 +229,58 @@ A cancelled request cannot block the owner: response send uses its one-slot buff
 Process at most eight pending captures between simulation steps, then advance market work.
 This prevents a request flood from indefinitely starving generation.
 
-## 4. Simulator contract
+## 4. Matching and simulator contract
 
 Baseline symbol BTC-USD, reference price64000.00 USD, tick0.01 USD, lot0.0001 BTC.
 Use a100ms logical step.
-At each step, choose one seeded event:80% market trade,10% limit addition,10% cancellation.
-This is an average event mix, not a fixed promise of eight trades in every real second.
+At each step, choose one seeded primary command:90% new limit order and10% cancellation attempt.
+This is an average input mix, not a fixed promise of nine orders in every real second.
 
-A market event chooses buy or sell, consumes the current best opposite level, and records the actual fill.
-Fill quantity is a seeded integer from1 to the smaller of10000 lots and that level's available quantity.
-A trade cannot exceed available quantity.
-Limit additions choose a valid side and non-crossing price near the current book.
-They move bids toward the current best ask and asks toward the current best bid.
-Cancellations remove a seeded amount from an existing level.
-After each event, replenish the far end to20 levels per side and remove excess levels beyond50.
-Every actual level change, including replenishment or removal, enters the sequence log.
-If the emitted changes expose a spread above20 ticks, add recovery quotes around the previous midpoint.
-Place the recovery bid10 ticks below that midpoint and the recovery ask10 ticks above it.
-Then run depth repair again, so each published book keeps20 to50 levels per side.
-The20-tick cap matches one initial20-level, one-tick ladder.
-It is a demo rule, not exchange calibration.
-A plain inward limit-addition flip can still leave large gaps after best quotes disappear.
-Do not fake chart values to hide gaps.
-Candles must use generated trade prices from the simulator.
+The random generator chooses command type, side, price, quantity, or cancellation target.
+The matcher decides executions from the current resting book.
+There is no polling matcher and no second random trade gate.
+Every accepted crossing order executes synchronously during its submit call.
+A buy fills resting asks priced at or below its limit.
+A sell fills resting bids priced at or above its limit.
+Best price wins before time priority.
+At one price, the oldest surviving order fills first.
+A fill uses the resting order's price.
+Any unfilled limit quantity rests at the end of its price queue.
+Cancellation removes one identified resting order and its remaining quantity.
+
+The matching core stores one FIFO queue per price and an order-ID index.
+It uses maps for price levels and `container/list` nodes for indexed cancellation.
+It sorts occupied compatible opposite prices for each submit.
+It plans fills and capacity checks before mutation.
+The planned-fill slice allocates only when a command really crosses resting liquidity.
+Rejected commands do not consume order IDs, book sequence numbers, or state changes.
+
+Order IDs identify accepted incoming orders inside the matcher.
+Trade IDs identify public fills emitted by the simulator.
+Those counters have different meanings and must not be merged.
+One accepted order can create many trades.
+All fills in one logical step share the same timestamp.
+Candles must apply all fills in order, including same-time fills.
+Open is the first fill price, close is the last fill price, and volume is the sum.
+
+After the primary command, passive maintenance keeps synthetic depth useful for display.
+If the book is already healthy and two order slots remain, maintenance returns no changes.
+Maintenance uses the matcher order-count accessor for that fast path.
+Maintenance submits or cancels orders through the same matcher API.
+It must not hide a fill created by a supposedly passive quote.
+If maintenance creates a fill, treat that as an invariant failure.
+The public book should end each event with20 to50 price levels per side and spread1 to20 ticks.
+Every aggregate book mutation enters the sequence log.
+The delivery layer may coalesce level values later, but sequence coverage must remain contiguous.
 
 Price bounds:100.00–100000.00 USD.
 Per-level size bound:10.0000 BTC.
-Per-generated-trade size bound:1.0000 BTC.
+Matcher order size bound:10.0000 BTC.
+Random primary order size bound:1.0000 BTC.
+Seeded and maintenance order size formula:10000+(index%10)*1000 lots.
+Generated customer prices keep at least20 ticks of guard band from absolute price bounds.
+Maximum resting orders:1024.
+One submit can fill at most1024 maker orders.
 When a boundary prevents a proposed change, choose a deterministic valid alternative; do not redraw based on wall-clock timing.
 Test boundary behaviour directly rather than relying on chance to reach it.
 
@@ -339,8 +366,8 @@ Boundary DTOs preserve protocol.md and schemas.md. Domain types preserve their m
 ```text
 ParsePrice(text) -> integer ticks or validation error
 ParseQuantity(text) -> integer lots or validation error
-Simulator.Next(logicalTime) -> ordered book changes and zero/one trade
-Book.Snapshot() -> immutable levels and sequence
+Simulator.Next(logicalTime) -> ordered book changes and zero or more trades
+Matcher.Snapshot() -> immutable levels and sequence
 Candles.Apply(trade) / Candles.Advance(logicalTime) -> changed candle keys
 Candles.History(interval,limit) -> copied ascending candle values
 Tier.Step(state,input,monotonicNow) -> next state and reasoned transitions
