@@ -15,7 +15,7 @@ services:
         sync: false
 
   - type: web
-    name: spackt-web
+    name: spackt
     runtime: static
     autoDeployTrigger: "off"
     rootDir: web

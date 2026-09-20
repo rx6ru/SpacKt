@@ -31,7 +31,7 @@ docker compose down --remove-orphans
 | Service | Type | Runtime | Health check |
 | --- | --- | --- | --- |
 | `spackt-api` | Web service | Docker | `/readyz` |
-| `spackt-web` | Static site | Static export | Render static hosting |
+| `spackt` | Static site | Static export | Render static hosting |
 
 The blueprint uses `autoDeployTrigger: off`.
 This setting stops Render from deploying directly from Git pushes.
@@ -48,7 +48,7 @@ Set backend environment values:
 | Name | Value |
 | --- | --- |
 | `PORT` | `8080` |
-| `SPACKT_ALLOWED_ORIGINS` | Exact frontend origin, for example `https://spackt-web.onrender.com` |
+| `SPACKT_ALLOWED_ORIGINS` | Exact frontend origin, for example `https://spackt.onrender.com` |
 
 Set frontend environment values:
 
