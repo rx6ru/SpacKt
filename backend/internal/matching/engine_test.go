@@ -139,6 +139,63 @@ func TestNewValidatesLimitsAndStartsEmpty(t *testing.T) {
 	}
 }
 
+func TestOrderCountTracksActiveRestingOrdersWithoutCopy(t *testing.T) {
+	engine := newEngine(t, defaultLimits())
+	if got := engine.OrderCount(); got != 0 {
+		t.Fatalf("empty OrderCount() = %d, want 0", got)
+	}
+
+	firstAsk := mustSubmit(t, engine, Sell, 10_100, 10_000)
+	secondAsk := mustSubmit(t, engine, Sell, 10_200, 10_000)
+	bid := mustSubmit(t, engine, Buy, 10_000, 5_000)
+	if got := engine.OrderCount(); got != 3 {
+		t.Fatalf("OrderCount() after passive additions = %d, want 3", got)
+	}
+
+	partial := mustSubmit(t, engine, Buy, 10_100, 4_000)
+	if partial.RemainingLots != 0 {
+		t.Fatalf("partial fill incoming remainder = %d, want 0", partial.RemainingLots)
+	}
+	if got := engine.OrderCount(); got != 3 {
+		t.Fatalf("OrderCount() after partial maker fill = %d, want unchanged 3", got)
+	}
+
+	remainder := mustSubmit(t, engine, Buy, 10_100, 10_000)
+	if remainder.RemainingLots != 4_000 {
+		t.Fatalf("resting remainder = %d, want 4000", remainder.RemainingLots)
+	}
+	if got := engine.OrderCount(); got != 3 {
+		t.Fatalf("OrderCount() after exhausted maker plus resting remainder = %d, want 3", got)
+	}
+
+	mustCancel(t, engine, bid.OrderID)
+	if got := engine.OrderCount(); got != 2 {
+		t.Fatalf("OrderCount() after cancel = %d, want 2", got)
+	}
+
+	before := engine.OrderCount()
+	requireErrorIsNoMutation(t, engine, ErrInvalidOrder, func() error {
+		_, err := engine.Submit(Buy, 0, 1)
+		return err
+	})
+	if got := engine.OrderCount(); got != before {
+		t.Fatalf("OrderCount() after rejected submit = %d, want unchanged %d", got, before)
+	}
+	requireErrorIsNoMutation(t, engine, ErrUnknownOrder, func() error {
+		_, err := engine.Cancel(999_999)
+		return err
+	})
+	if got := engine.OrderCount(); got != before {
+		t.Fatalf("OrderCount() after rejected cancel = %d, want unchanged %d", got, before)
+	}
+
+	mustCancel(t, engine, secondAsk.OrderID)
+	if got := engine.OrderCount(); got != 1 {
+		t.Fatalf("OrderCount() after canceling second ask = %d, want 1", got)
+	}
+	_ = firstAsk
+}
+
 func TestUserExampleMatchesBuyAgainstRestingAsk(t *testing.T) {
 	engine := newEngine(t, defaultLimits())
 	ask := mustSubmit(t, engine, Sell, 10_100, 20_000)

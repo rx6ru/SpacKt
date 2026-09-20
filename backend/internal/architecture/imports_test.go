@@ -15,9 +15,9 @@ func TestBackendImportBoundariesMatchArchitectureDocument(t *testing.T) {
 	allowed := map[string][]string{
 		"cmd/server":              {"internal/transport", "internal/market", "internal/delivery", "internal/config"},
 		"internal/transport":      {"internal/transport/wire", "internal/delivery", "internal/model", "internal/precision"},
-		"internal/market":         {"internal/sim", "internal/book", "internal/candle", "internal/model"},
-		"internal/sim":            {"internal/book", "internal/model"},
-		"internal/book":           {"internal/model"},
+		"internal/market":         {"internal/sim", "internal/candle", "internal/model"},
+		"internal/sim":            {"internal/matching", "internal/model"},
+		"internal/matching":       {"internal/model"},
 		"internal/candle":         {"internal/model"},
 		"internal/tier":           {"internal/model"},
 		"internal/delivery":       {"internal/tier", "internal/model"},
@@ -63,7 +63,7 @@ func TestDomainModelDoesNotImportTransportOrFrameworkPackages(t *testing.T) {
 }
 
 func TestPurePackagesDoNotImportTransportJSONWebSocketOrThirdPartyPackages(t *testing.T) {
-	for _, pkg := range []string{"model", "book", "candle", "sim", "tier", "precision", "config"} {
+	for _, pkg := range []string{"model", "matching", "candle", "sim", "tier", "precision", "config"} {
 		checkPurePackage(t, filepath.Join("..", "..", "internal", pkg))
 	}
 }

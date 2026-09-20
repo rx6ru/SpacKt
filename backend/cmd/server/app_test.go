@@ -743,8 +743,56 @@ func TestDebugDropNextBookDeltaCreatesObservableGap(t *testing.T) {
 	}
 }
 
-func TestFreshSnapshotAndBufferedWebSocketRangeUseSameSession(t *testing.T) {
+func TestExpiredInitialBookCursorRequiresFreshSnapshotRecovery(t *testing.T) {
 	ts := newTestServer(t, nil)
+	waitForStatus(t, ts.srv.URL+"/readyz", http.StatusOK)
+
+	conn := dialWS(t, ts)
+	defer conn.CloseNow()
+	hello := readTyped(t, conn, "hello", 5*time.Second)
+
+	status, staleSnapshot, _ := doJSON(t, http.MethodGet, ts.srv.URL+"/api/book", "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("book status = %d, want 200; body=%s", status, staleSnapshot)
+	}
+	if hello["session"] != staleSnapshot["session"] {
+		t.Fatalf("hello session = %v, snapshot session = %v", hello["session"], staleSnapshot["session"])
+	}
+
+	reset := readTyped(t, conn, "book_reset", 5*time.Second)
+	assertString(t, reset, "reason", "cursor_expired")
+	if reset["session"] != hello["session"] {
+		t.Fatalf("reset session = %v, hello session = %v", reset["session"], hello["session"])
+	}
+
+	status, freshSnapshot, _ := doJSON(t, http.MethodGet, ts.srv.URL+"/api/book", "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("fresh book status = %d, want 200; body=%s", status, freshSnapshot)
+	}
+	if freshSnapshot["session"] != hello["session"] {
+		t.Fatalf("fresh snapshot session = %v, hello session = %v", freshSnapshot["session"], hello["session"])
+	}
+	if int64At(t, freshSnapshot, "seq") < int64At(t, staleSnapshot, "seq") {
+		t.Fatalf("fresh snapshot seq = %d, stale seq = %d", int64At(t, freshSnapshot, "seq"), int64At(t, staleSnapshot, "seq"))
+	}
+	freshSeq := int64At(t, freshSnapshot, "seq")
+	rangeMsg := readUntil(t, conn, 5*time.Second, func(msg map[string]any) bool {
+		book, ok := msg["book"].(map[string]any)
+		return ok && int64At(t, book, "to") >= freshSeq+1
+	})
+	book := objectAt(t, rangeMsg, "book")
+	if from, to := int64At(t, book, "from"), int64At(t, book, "to"); from > freshSeq+1 || to < freshSeq+1 {
+		t.Fatalf("resumed book range = %d..%d, fresh seq = %d; want coverage of freshSeq+1", from, to, freshSeq)
+	}
+	if rangeMsg["session"] != freshSnapshot["session"] {
+		t.Fatalf("range session = %v, fresh snapshot session = %v", rangeMsg["session"], freshSnapshot["session"])
+	}
+}
+
+func TestFreshSnapshotAndBufferedWebSocketRangeUseSameSession(t *testing.T) {
+	ts := newTestServer(t, func(cfg *Config) {
+		cfg.HistoryMinutes = 1
+	})
 	waitForStatus(t, ts.srv.URL+"/readyz", http.StatusOK)
 
 	conn := dialWS(t, ts)

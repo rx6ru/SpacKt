@@ -44,13 +44,12 @@ func TestTradeIDsIncreaseWithoutGaps(t *testing.T) {
 
 	for i := 0; i < 10000 && want <= 100; i++ {
 		event := s.Next()
-		if event.Trade == nil {
-			continue
+		for _, trade := range event.Trades {
+			if trade.ID != want {
+				t.Fatalf("trade ID = %d, want %d", trade.ID, want)
+			}
+			want++
 		}
-		if event.Trade.ID != want {
-			t.Fatalf("trade ID = %d, want %d", event.Trade.ID, want)
-		}
-		want++
 	}
 	if want <= 100 {
 		t.Fatalf("generated %d trades in 10000 events, want 100", want-1)
@@ -96,34 +95,14 @@ func TestSimulatorClampsHighConfiguredMidpointInsidePriceRange(t *testing.T) {
 
 func TestTradeQuantityNeverExceedsAppliedBookAvailability(t *testing.T) {
 	s := sim.New(testConfig(29, 1700000000000))
-	var previous model.BookSnapshot
-	havePrevious := false
+	previous := s.Next().Book
 
-	for i := 0; i < 2000; i++ {
+	for i := 1; i < 2000; i++ {
 		event := s.Next()
-		if event.Trade == nil {
-			previous = event.Book
-			havePrevious = true
-			continue
-		}
-		if event.Trade.QuantityLots <= 0 {
-			t.Fatalf("trade %d has non-positive quantity %d", event.Trade.ID, event.Trade.QuantityLots)
-		}
-		if havePrevious {
-			assertBookInvariant(t, previous)
-			best := previous.Asks[0]
-			if event.Trade.Side == "sell" {
-				best = previous.Bids[0]
-			}
-			if event.Trade.PriceTicks != best.PriceTicks {
-				t.Fatalf("trade %d price = %d, want previous best opposite price %d for side %s", event.Trade.ID, event.Trade.PriceTicks, best.PriceTicks, event.Trade.Side)
-			}
-			if event.Trade.QuantityLots > best.QuantityLots {
-				t.Fatalf("trade %d quantity = %d, want at most previous best opposite size %d", event.Trade.ID, event.Trade.QuantityLots, best.QuantityLots)
-			}
+		if len(event.Trades) > 0 {
+			assertTradesConsumeAvailableLiquidity(t, previous, event.Trades)
 		}
 		previous = event.Book
-		havePrevious = true
 	}
 }
 
@@ -139,14 +118,13 @@ func assertEventWithinSimulatorBounds(t *testing.T, event sim.Event) {
 			t.Fatalf("book change seq %d has negative quantity %d", change.Seq, change.QuantityLots)
 		}
 	}
-	if event.Trade == nil {
-		return
-	}
-	if event.Trade.PriceTicks < 10000 || event.Trade.PriceTicks > 10000000 {
-		t.Fatalf("trade %d price = %d, want within 10000..10000000", event.Trade.ID, event.Trade.PriceTicks)
-	}
-	if event.Trade.QuantityLots <= 0 {
-		t.Fatalf("trade %d quantity = %d, want positive", event.Trade.ID, event.Trade.QuantityLots)
+	for _, trade := range event.Trades {
+		if trade.PriceTicks < 10000 || trade.PriceTicks > 10000000 {
+			t.Fatalf("trade %d price = %d, want within 10000..10000000", trade.ID, trade.PriceTicks)
+		}
+		if trade.QuantityLots <= 0 {
+			t.Fatalf("trade %d quantity = %d, want positive", trade.ID, trade.QuantityLots)
+		}
 	}
 }
 
@@ -183,12 +161,51 @@ func testConfig(seed int64, epochMS int64) sim.Config {
 
 func normalizeEventTime(event sim.Event, deltaMS int64) sim.Event {
 	event.TimeMS -= deltaMS
-	if event.Trade != nil {
-		trade := *event.Trade
-		trade.TimeMS -= deltaMS
-		event.Trade = &trade
+	for index := range event.Trades {
+		event.Trades[index].TimeMS -= deltaMS
 	}
 	return event
+}
+
+func assertTradesConsumeAvailableLiquidity(t *testing.T, previous model.BookSnapshot, trades []model.Trade) {
+	t.Helper()
+	book := cloneTestBook(previous)
+	for _, trade := range trades {
+		if trade.QuantityLots <= 0 {
+			t.Fatalf("trade %d has non-positive quantity %d", trade.ID, trade.QuantityLots)
+		}
+		opposite := book.Asks[0]
+		if trade.Side == "sell" {
+			opposite = book.Bids[0]
+		}
+		if trade.PriceTicks != opposite.PriceTicks {
+			t.Fatalf("trade %d price = %d, want then-best opposite price %d for side %s", trade.ID, trade.PriceTicks, opposite.PriceTicks, trade.Side)
+		}
+		if trade.QuantityLots > opposite.QuantityLots {
+			t.Fatalf("trade %d quantity = %d, want at most then-available opposite size %d", trade.ID, trade.QuantityLots, opposite.QuantityLots)
+		}
+		consumeBookLevel(t, &book, trade)
+	}
+}
+
+func cloneTestBook(book model.BookSnapshot) model.BookSnapshot {
+	return model.BookSnapshot{Seq: book.Seq, Bids: append([]model.Level(nil), book.Bids...), Asks: append([]model.Level(nil), book.Asks...)}
+}
+
+func consumeBookLevel(t *testing.T, book *model.BookSnapshot, trade model.Trade) {
+	t.Helper()
+	levels := &book.Asks
+	if trade.Side == "sell" {
+		levels = &book.Bids
+	}
+	if len(*levels) == 0 {
+		t.Fatalf("trade %d consumed empty opposite side", trade.ID)
+	}
+	if (*levels)[0].QuantityLots == trade.QuantityLots {
+		*levels = (*levels)[1:]
+		return
+	}
+	(*levels)[0].QuantityLots -= trade.QuantityLots
 }
 
 func assertBookInvariant(t *testing.T, snap model.BookSnapshot) {

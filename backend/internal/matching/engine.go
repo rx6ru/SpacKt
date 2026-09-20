@@ -162,6 +162,10 @@ func (e *Engine) Snapshot() model.BookSnapshot {
 	return model.BookSnapshot{Seq: e.currentBookSeq(), Bids: e.snapshotSide(Buy), Asks: e.snapshotSide(Sell)}
 }
 
+func (e *Engine) OrderCount() int {
+	return len(e.orders)
+}
+
 func (e *Engine) Orders() []Order {
 	ids := make([]uint64, 0, len(e.orders))
 	for id := range e.orders {
@@ -193,7 +197,7 @@ func (e *Engine) validateOrder(side Side, priceTicks, quantityLots int64) error 
 func (e *Engine) planFills(side Side, priceTicks, quantityLots int64) ([]plannedFill, int64) {
 	remaining := quantityLots
 	prices := e.compatibleOppositePrices(side, priceTicks)
-	fills := make([]plannedFill, 0, minInt(len(e.orders), e.limits.MaxOrders))
+	var fills []plannedFill
 	for _, price := range prices {
 		if remaining == 0 {
 			break

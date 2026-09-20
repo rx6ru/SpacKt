@@ -3,7 +3,6 @@ package sim_test
 import (
 	"testing"
 
-	"spackt/internal/book"
 	"spackt/internal/model"
 	"spackt/internal/sim"
 )
@@ -30,6 +29,7 @@ func TestPublicSpreadStaysWithinTwentyTicksForFixedSeeds(t *testing.T) {
 		{name: "seed 3", seed: 3},
 		{name: "seed 17", seed: 17},
 		{name: "seed 41", seed: 41},
+		{name: "negative seed", seed: -41},
 	}
 
 	for _, tt := range tests {
@@ -83,16 +83,16 @@ func TestFirstNonTradeChangeCanImproveInsidePreviousBest(t *testing.T) {
 
 	for step := 1; step < 10000; step++ {
 		event := s.Next()
-		if event.Trade != nil || len(event.BookChanges) == 0 {
+		if len(event.Trades) != 0 || len(event.BookChanges) == 0 {
 			previous = event.Book
 			continue
 		}
-		first := event.BookChanges[0]
-		bidImproved := first.Side == "bid" &&
+		first := modelLevelChanges(t, event.BookChanges)[0]
+		bidImproved := first.Side == model.BookSideBid &&
 			first.QuantityLots > 0 &&
 			first.PriceTicks > previous.Bids[0].PriceTicks &&
 			first.PriceTicks < previous.Asks[0].PriceTicks
-		askImproved := first.Side == "ask" &&
+		askImproved := first.Side == model.BookSideAsk &&
 			first.QuantityLots > 0 &&
 			first.PriceTicks < previous.Asks[0].PriceTicks &&
 			first.PriceTicks > previous.Bids[0].PriceTicks
@@ -103,44 +103,6 @@ func TestFirstNonTradeChangeCanImproveInsidePreviousBest(t *testing.T) {
 	}
 
 	t.Fatal("no non-trade event used its first book change to add a positive quote inside the previous best quotes in 10000 steps")
-}
-
-func TestWideGapRecoveryUsesPreviousMidpointAnchor(t *testing.T) {
-	s := sim.New(testConfig(7, 1700000000000))
-	previous := s.Next().Book
-
-	for step := 1; step < 10000; step++ {
-		event := s.Next()
-		replayed := cloneBook(previous)
-		previousMid := (previous.Bids[0].PriceTicks + previous.Asks[0].PriceTicks) / 2
-		sawWideGap := false
-		sawRecoveryBid := false
-		sawRecoveryAsk := false
-
-		for _, change := range event.BookChanges {
-			applyPublicBookChange(t, &replayed, change)
-			spread := bestSpreadTicks(replayed)
-			if spread > maxPublicSpreadTicks {
-				sawWideGap = true
-			}
-			if sawWideGap && change.Side == "bid" && change.QuantityLots > 0 && change.PriceTicks == previousMid-10 {
-				sawRecoveryBid = true
-			}
-			if sawWideGap && change.Side == "ask" && change.QuantityLots > 0 && change.PriceTicks == previousMid+10 {
-				sawRecoveryAsk = true
-			}
-			if sawWideGap && sawRecoveryBid && sawRecoveryAsk {
-				if finalSpread := bestSpreadTicks(event.Book); finalSpread <= 0 || finalSpread > maxPublicSpreadTicks {
-					t.Fatalf("step %d final spread = %d ticks, want 1..20 after anchored recovery", step, finalSpread)
-				}
-				return
-			}
-		}
-
-		previous = event.Book
-	}
-
-	t.Fatal("no event exposed a wide intermediate gap followed by positive recovery quotes at previous midpoint +/- 10 ticks in 10000 steps")
 }
 
 func TestBookChangesUseContiguousSequencesAndMatchPublishedBook(t *testing.T) {
@@ -169,32 +131,20 @@ func TestBookChangesUseContiguousSequencesAndMatchPublishedBook(t *testing.T) {
 	}
 }
 
-func TestTradeExecutesAgainstPreviousBestOppositeQuote(t *testing.T) {
+func TestTradesExecuteAgainstThenBestOppositeQuote(t *testing.T) {
 	s := sim.New(testConfig(7, 1700000000000))
 	previous := s.Next().Book
 	checked := 0
 
 	for step := 1; step < 10000 && checked < 200; step++ {
 		event := s.Next()
-		if event.Trade == nil {
+		if len(event.Trades) == 0 {
 			previous = event.Book
 			continue
 		}
-		opposite := previous.Asks[0]
-		if event.Trade.Side == "sell" {
-			opposite = previous.Bids[0]
-		}
-		if event.Trade.PriceTicks != opposite.PriceTicks {
-			t.Fatalf("trade %d price = %d, want previous best opposite price %d", event.Trade.ID, event.Trade.PriceTicks, opposite.PriceTicks)
-		}
-		if event.Trade.QuantityLots <= 0 {
-			t.Fatalf("trade %d quantity = %d, want positive", event.Trade.ID, event.Trade.QuantityLots)
-		}
-		if event.Trade.QuantityLots > opposite.QuantityLots {
-			t.Fatalf("trade %d quantity = %d, want at most previous best opposite size %d", event.Trade.ID, event.Trade.QuantityLots, opposite.QuantityLots)
-		}
+		assertTradesConsumeAvailableLiquidity(t, previous, event.Trades)
 		previous = event.Book
-		checked++
+		checked += len(event.Trades)
 	}
 	if checked < 200 {
 		t.Fatalf("checked %d trades in 10000 steps, want 200", checked)
@@ -213,13 +163,13 @@ func cloneBook(book model.BookSnapshot) model.BookSnapshot {
 	}
 }
 
-func applyPublicBookChange(t *testing.T, book *model.BookSnapshot, update book.LevelUpdate) {
+func applyPublicBookChange(t *testing.T, book *model.BookSnapshot, update model.LevelChange) {
 	t.Helper()
 	book.Seq = update.Seq
 	switch update.Side {
-	case "bid":
+	case model.BookSideBid:
 		book.Bids = applyLevelUpdate(book.Bids, update.PriceTicks, update.QuantityLots, true)
-	case "ask":
+	case model.BookSideAsk:
 		book.Asks = applyLevelUpdate(book.Asks, update.PriceTicks, update.QuantityLots, false)
 	default:
 		t.Fatalf("book change seq %d has side %q, want bid or ask", update.Seq, update.Side)

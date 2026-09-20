@@ -3,7 +3,6 @@ package market
 import (
 	"context"
 	"errors"
-	"spackt/internal/book"
 	"spackt/internal/candle"
 	"spackt/internal/model"
 	"spackt/internal/sim"
@@ -14,6 +13,10 @@ import (
 type Clock interface {
 	Now() time.Time
 	Ticks() <-chan time.Time
+}
+
+type eventSource interface {
+	Next() sim.Event
 }
 
 type Config struct {
@@ -41,7 +44,7 @@ type BookCapture = model.BookCapture
 type Owner struct {
 	cfg        Config
 	clk        Clock
-	sim        *sim.Simulator
+	sim        eventSource
 	aggs       map[model.CandleInterval]*candle.Aggregator
 	revs       map[candleKey]uint64
 	reqs       chan captureRequest
@@ -171,6 +174,7 @@ func (o *Owner) Start(ctx context.Context) error {
 	o.state.running = true
 	o.mu.Unlock()
 
+	scheduled := o.clk.Now()
 	warmupSteps := int((time.Duration(o.cfg.HistoryMinutes) * time.Minute) / o.cfg.Step)
 	for i := 0; i < warmupSteps; i++ {
 		if err := runCtx.Err(); err != nil {
@@ -184,9 +188,8 @@ func (o *Owner) Start(ctx context.Context) error {
 		return err
 	}
 	o.cleanupCandleRevisions()
-	at := o.clk.Now()
-	o.publish(at)
-	go o.run(runCtx, at)
+	o.publish(o.clk.Now())
+	go o.run(runCtx, scheduled)
 	return nil
 }
 
@@ -393,22 +396,24 @@ func (o *Owner) applyEvent(event sim.Event) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	if event.Trade != nil {
-		o.state.trades = append(o.state.trades, *event.Trade)
+	if len(event.Trades) > 0 {
+		o.state.trades = append(o.state.trades, event.Trades...)
 		o.state.trades = tailTrades(o.state.trades, o.cfg.Retention.RecentTrades)
-		o.state.lastTradeID = event.Trade.ID
-		o.state.latestPrice = event.Trade.PriceTicks
-		if !o.state.initialized {
-			o.state.reference = event.Trade.PriceTicks
-		}
-		for interval, agg := range o.aggs {
-			o.recordCandles(interval, agg.Apply(*event.Trade), event.Rev)
+		for _, trade := range event.Trades {
+			o.state.lastTradeID = trade.ID
+			o.state.latestPrice = trade.PriceTicks
+			if !o.state.initialized {
+				o.state.reference = trade.PriceTicks
+			}
+			for interval, agg := range o.aggs {
+				o.recordCandles(interval, agg.Apply(trade), event.Rev)
+			}
 		}
 	}
 	for interval, agg := range o.aggs {
 		o.recordCandles(interval, agg.Advance(event.TimeMS), event.Rev)
 	}
-	o.state.bookChanges = append(o.state.bookChanges, convertBookChanges(event.BookChanges)...)
+	o.state.bookChanges = append(o.state.bookChanges, event.BookChanges...)
 	o.state.bookChanges = tailLevelChanges(o.state.bookChanges, o.cfg.Retention.BookChanges)
 	o.state.workTimeMS = event.TimeMS
 	o.state.workRev = event.Rev
@@ -538,19 +543,6 @@ func newAggregators(retention map[model.CandleInterval]int) map[model.CandleInte
 		model.Interval1m: candle.New(60_000, retention[model.Interval1m]),
 		model.Interval5m: candle.New(300_000, retention[model.Interval5m]),
 	}
-}
-
-func convertBookChanges(changes []book.LevelUpdate) []model.LevelChange {
-	out := make([]model.LevelChange, len(changes))
-	for i, change := range changes {
-		out[i] = model.LevelChange{
-			Seq:          change.Seq,
-			Side:         model.BookSide(change.Side),
-			PriceTicks:   change.PriceTicks,
-			QuantityLots: change.QuantityLots,
-		}
-	}
-	return out
 }
 
 func clonePublication(pub model.Publication) model.Publication {

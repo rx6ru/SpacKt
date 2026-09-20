@@ -1,10 +1,10 @@
 package market
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
-	"spackt/internal/book"
 	"spackt/internal/model"
 	"spackt/internal/sim"
 )
@@ -139,18 +139,13 @@ func newHandEventOwner() *Owner {
 }
 
 func handManyFillEvent(rev uint64, timeMS int64) sim.Event {
-	return sim.Event{
+	event := sim.Event{
 		Rev:    rev,
 		TimeMS: timeMS,
 		Trades: []model.Trade{
 			{ID: 1, TimeMS: timeMS, PriceTicks: 10_102, QuantityLots: 1, Side: "sell"},
 			{ID: 2, TimeMS: timeMS, PriceTicks: 10_101, QuantityLots: 2, Side: "sell"},
 			{ID: 3, TimeMS: timeMS, PriceTicks: 10_100, QuantityLots: 3, Side: "sell"},
-		},
-		BookChanges: []book.LevelUpdate{
-			{Seq: 1, Side: "bid", PriceTicks: 10_102, QuantityLots: 0},
-			{Seq: 2, Side: "bid", PriceTicks: 10_101, QuantityLots: 0},
-			{Seq: 3, Side: "bid", PriceTicks: 10_100, QuantityLots: 4},
 		},
 		Book: model.BookSnapshot{
 			Seq: 3,
@@ -162,6 +157,30 @@ func handManyFillEvent(rev uint64, timeMS int64) sim.Event {
 			},
 		},
 	}
+	setEventBookChanges(&event, []model.LevelChange{
+		{Seq: 1, Side: model.BookSideBid, PriceTicks: 10_102, QuantityLots: 0},
+		{Seq: 2, Side: model.BookSideBid, PriceTicks: 10_101, QuantityLots: 0},
+		{Seq: 3, Side: model.BookSideBid, PriceTicks: 10_100, QuantityLots: 4},
+	})
+	return event
+}
+
+func setEventBookChanges(event *sim.Event, changes []model.LevelChange) {
+	field := reflect.ValueOf(event).Elem().FieldByName("BookChanges")
+	slice := reflect.MakeSlice(field.Type(), len(changes), len(changes))
+	for i, change := range changes {
+		item := slice.Index(i)
+		item.FieldByName("Seq").SetUint(change.Seq)
+		side := item.FieldByName("Side")
+		if side.Kind() == reflect.String {
+			side.SetString(string(change.Side))
+		} else {
+			side.Set(reflect.ValueOf(change.Side).Convert(side.Type()))
+		}
+		item.FieldByName("PriceTicks").SetInt(change.PriceTicks)
+		item.FieldByName("QuantityLots").SetInt(change.QuantityLots)
+	}
+	field.Set(slice)
 }
 
 func requireTrades(t *testing.T, got []model.Trade, want []model.Trade) {

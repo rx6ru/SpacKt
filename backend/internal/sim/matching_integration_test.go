@@ -1,9 +1,9 @@
 package sim_test
 
 import (
+	"reflect"
 	"testing"
 
-	"spackt/internal/book"
 	"spackt/internal/model"
 	"spackt/internal/sim"
 )
@@ -158,14 +158,15 @@ func distinctTradePrices(trades []model.Trade) int {
 	return len(seen)
 }
 
-func replayBookLevelUpdates(t *testing.T, snapshot model.BookSnapshot, changes []book.LevelUpdate) model.BookSnapshot {
+func replayBookLevelUpdates(t *testing.T, snapshot model.BookSnapshot, changes any) model.BookSnapshot {
 	t.Helper()
 	book := model.BookSnapshot{
 		Seq:  snapshot.Seq,
 		Bids: append([]model.Level(nil), snapshot.Bids...),
 		Asks: append([]model.Level(nil), snapshot.Asks...),
 	}
-	for _, change := range changes {
+	for _, raw := range modelLevelChanges(t, changes) {
+		change := raw
 		if change.Seq != book.Seq+1 {
 			t.Fatalf("change seq = %d after %d", change.Seq, book.Seq)
 		}
@@ -180,6 +181,25 @@ func replayBookLevelUpdates(t *testing.T, snapshot model.BookSnapshot, changes [
 		}
 	}
 	return book
+}
+
+func modelLevelChanges(t *testing.T, changes any) []model.LevelChange {
+	t.Helper()
+	value := reflect.ValueOf(changes)
+	if value.Kind() != reflect.Slice {
+		t.Fatalf("book changes have kind %s, want slice", value.Kind())
+	}
+	out := make([]model.LevelChange, 0, value.Len())
+	for i := 0; i < value.Len(); i++ {
+		item := value.Index(i)
+		out = append(out, model.LevelChange{
+			Seq:          item.FieldByName("Seq").Uint(),
+			Side:         model.BookSide(item.FieldByName("Side").String()),
+			PriceTicks:   item.FieldByName("PriceTicks").Int(),
+			QuantityLots: item.FieldByName("QuantityLots").Int(),
+		})
+	}
+	return out
 }
 
 func applyPublicLevel(levels []model.Level, priceTicks int64, quantityLots int64, descending bool) []model.Level {

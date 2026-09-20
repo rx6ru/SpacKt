@@ -1,8 +1,10 @@
 package sim
 
 import (
+	"errors"
 	"math/rand/v2"
-	"spackt/internal/book"
+
+	"spackt/internal/matching"
 	"spackt/internal/model"
 )
 
@@ -17,32 +19,34 @@ type Event struct {
 	Rev         uint64
 	TimeMS      int64
 	Trades      []model.Trade
-	Trade       *model.Trade
-	BookChanges []book.LevelUpdate
+	BookChanges []model.LevelChange
 	Book        model.BookSnapshot
 }
 
 type Simulator struct {
-	rng       *rand.Rand
-	book      *book.Book
-	epochMS   int64
-	stepMS    int64
-	nextIndex int64
-	rev       uint64
-	nextTrade uint64
+	rng         *rand.Rand
+	engine      *matching.Engine
+	epochMS     int64
+	stepMS      int64
+	nextIndex   int64
+	rev         uint64
+	nextTrade   uint64
+	seedChanges []model.LevelChange
 }
 
 const (
-	defaultMidTicks = int64(6400000)
-	defaultStepMS   = int64(100)
-	minPriceTicks   = int64(10000)
-	maxPriceTicks   = int64(10000000)
-	maxTradeLots    = int64(10000)
-	maxBookLots     = int64(100000)
-	targetDepth     = 20
-	maxDepth        = 50
-	maxSpreadTicks  = int64(20)
-	quoteStepRange  = 2
+	defaultMidTicks   = int64(6400000)
+	defaultStepMS     = int64(100)
+	minPriceTicks     = int64(10000)
+	maxPriceTicks     = int64(10000000)
+	maxTradeLots      = int64(10000)
+	maxBookLots       = int64(100000)
+	matchingOrderCap  = 1024
+	targetDepth       = 20
+	maxDepth          = 50
+	maxSpreadTicks    = int64(20)
+	quoteRadiusTicks  = int64(10)
+	maintenanceBudget = 2132
 )
 
 func New(config Config) *Simulator {
@@ -53,185 +57,135 @@ func New(config Config) *Simulator {
 	if config.StepMS == 0 {
 		config.StepMS = defaultStepMS
 	}
-	return &Simulator{
+	engine, err := matching.New(matching.Limits{
+		MinPriceTicks: minPriceTicks,
+		MaxPriceTicks: maxPriceTicks,
+		MaxOrderLots:  maxBookLots,
+		MaxLevelLots:  maxBookLots,
+		MaxOrders:     matchingOrderCap,
+	})
+	if err != nil {
+		panic("simulator matching limits are invalid")
+	}
+	s := &Simulator{
 		rng:       rand.New(rand.NewPCG(uint64(config.Seed), uint64(config.Seed)^0x9e3779b97f4a7c15)),
-		book:      book.NewBounded(config.MidTicks, minPriceTicks, maxPriceTicks),
+		engine:    engine,
 		epochMS:   config.EpochMS,
 		stepMS:    config.StepMS,
 		nextTrade: 1,
 	}
+	s.seedChanges = s.seedBook(config.MidTicks)
+	return s
 }
 
 func (s *Simulator) Next() Event {
 	eventTime := s.epochMS + s.nextIndex*s.stepMS
 	s.nextIndex++
-	preEventBook := s.book.Snapshot()
-	preEventMid := bookMidpoint(preEventBook)
+	anchorMid := bookMidpoint(s.engine.Snapshot())
 
-	var trade *model.Trade
-	var changes []book.LevelUpdate
-	switch draw := s.rng.IntN(10); {
-	case draw < 8:
-		trade, changes = s.marketTrade(eventTime)
-	case draw == 8:
-		changes = s.limitAddition()
-	default:
-		changes = s.cancellation()
+	changes := append([]model.LevelChange(nil), s.seedChanges...)
+	s.seedChanges = nil
+
+	primary := s.primaryCommand(eventTime, anchorMid)
+	changes = append(changes, primary.BookChanges...)
+
+	maintenanceChanges, err := maintainLiquidity(s.engine, anchorMid, maintenanceBudget)
+	if err != nil {
+		panic("simulator maintenance failed: " + err.Error())
 	}
+	changes = append(changes, maintenanceChanges...)
 
-	changes = append(changes, s.repairBook()...)
-	changes = append(changes, s.repairSpread(preEventMid, changesExposeWideSpread(preEventBook, changes))...)
-	changes = append(changes, s.repairBook()...)
 	s.rev++
 	return Event{
 		Rev:         s.rev,
 		TimeMS:      eventTime,
-		Trade:       trade,
+		Trades:      primary.Trades,
 		BookChanges: changes,
-		Book:        s.book.Snapshot(),
+		Book:        s.engine.Snapshot(),
 	}
 }
 
-func (s *Simulator) marketTrade(timeMS int64) (*model.Trade, []book.LevelUpdate) {
-	snap := s.book.Snapshot()
-	side := "buy"
-	best := snap.Asks[0]
-	if s.rng.IntN(2) == 0 {
-		side = "sell"
-		best = snap.Bids[0]
-	}
-	limit := best.QuantityLots
-	if limit > maxTradeLots {
-		limit = maxTradeLots
-	}
-	if limit <= 0 {
-		panic("simulator selected non-positive book quantity")
-	}
-	trade := model.Trade{
-		ID:           s.nextTrade,
-		TimeMS:       timeMS,
-		PriceTicks:   best.PriceTicks,
-		QuantityLots: int64(s.rng.IntN(int(limit))) + 1,
-		Side:         side,
-	}
-	changes, err := s.book.ApplyTrade(trade)
-	if err != nil {
-		panic("simulator generated invalid trade")
-	}
-	s.nextTrade++
-	return &trade, changes
+type commandResult struct {
+	Trades      []model.Trade
+	BookChanges []model.LevelChange
 }
 
-func (s *Simulator) limitAddition() []book.LevelUpdate {
-	snap := s.book.Snapshot()
-	side := book.SideBid
-	if s.rng.IntN(2) == 0 {
-		side = book.SideAsk
+func (s *Simulator) seedBook(midTicks int64) []model.LevelChange {
+	changes := make([]model.LevelChange, 0, targetDepth*2)
+	for i := 1; i <= targetDepth; i++ {
+		bid := midTicks - int64(i)
+		ask := midTicks + int64(i)
+		bidResult, err := s.engine.Submit(matching.Buy, bid, seededQuantity(i))
+		if err != nil || len(bidResult.Fills) != 0 {
+			panic("simulator generated invalid bid seed")
+		}
+		changes = append(changes, bidResult.BookChanges...)
+		askResult, err := s.engine.Submit(matching.Sell, ask, seededQuantity(i))
+		if err != nil || len(askResult.Fills) != 0 {
+			panic("simulator generated invalid ask seed")
+		}
+		changes = append(changes, askResult.BookChanges...)
 	}
-
-	var price int64
-	if side == book.SideBid {
-		bestBid := snap.Bids[0].PriceTicks
-		bestAsk := snap.Asks[0].PriceTicks
-		price = bestBid + int64(s.rng.IntN(quoteStepRange))
-		if price >= bestAsk {
-			price = bestAsk - 1
-		}
-		if price < minPriceTicks {
-			price = minPriceTicks
-		}
-		if price >= bestAsk {
-			price = bestBid
-		}
-	} else {
-		bestBid := snap.Bids[0].PriceTicks
-		bestAsk := snap.Asks[0].PriceTicks
-		price = bestAsk - int64(s.rng.IntN(quoteStepRange))
-		if price <= bestBid {
-			price = bestBid + 1
-		}
-		if price > maxPriceTicks {
-			price = maxPriceTicks
-		}
-		if price <= bestBid {
-			price = bestAsk
-		}
-	}
-
-	return s.apply(book.LevelUpdate{
-		Side:         side,
-		PriceTicks:   price,
-		QuantityLots: int64(s.rng.IntN(int(maxBookLots))) + 1,
-	})
-}
-
-func (s *Simulator) cancellation() []book.LevelUpdate {
-	snap := s.book.Snapshot()
-	side := book.SideBid
-	levels := snap.Bids
-	if s.rng.IntN(2) == 0 {
-		side = book.SideAsk
-		levels = snap.Asks
-	}
-	if len(levels) == 0 {
-		panic("simulator selected an empty book side for cancellation")
-	}
-	level := levels[s.rng.IntN(len(levels))]
-	removeLots := int64(s.rng.IntN(int(level.QuantityLots))) + 1
-	nextQuantity := level.QuantityLots - removeLots
-	return s.apply(book.LevelUpdate{
-		Side:         side,
-		PriceTicks:   level.PriceTicks,
-		QuantityLots: nextQuantity,
-	})
-}
-
-func (s *Simulator) repairBook() []book.LevelUpdate {
-	var changes []book.LevelUpdate
-	for {
-		snap := s.book.Snapshot()
-		if len(snap.Bids) >= targetDepth && len(snap.Asks) >= targetDepth && len(snap.Bids) <= maxDepth && len(snap.Asks) <= maxDepth {
-			return changes
-		}
-		switch {
-		case len(snap.Bids) < targetDepth:
-			price, ok := repairPrice(snap, book.SideBid)
-			if !ok {
-				panic("simulator cannot repair bid depth within price bounds")
-			}
-			changes = append(changes, s.apply(book.LevelUpdate{Side: book.SideBid, PriceTicks: price, QuantityLots: repairQuantity(len(snap.Bids))})...)
-		case len(snap.Asks) < targetDepth:
-			price, ok := repairPrice(snap, book.SideAsk)
-			if !ok {
-				panic("simulator cannot repair ask depth within price bounds")
-			}
-			changes = append(changes, s.apply(book.LevelUpdate{Side: book.SideAsk, PriceTicks: price, QuantityLots: repairQuantity(len(snap.Asks))})...)
-		case len(snap.Bids) > maxDepth:
-			changes = append(changes, s.apply(book.LevelUpdate{Side: book.SideBid, PriceTicks: snap.Bids[len(snap.Bids)-1].PriceTicks, QuantityLots: 0})...)
-		case len(snap.Asks) > maxDepth:
-			changes = append(changes, s.apply(book.LevelUpdate{Side: book.SideAsk, PriceTicks: snap.Asks[len(snap.Asks)-1].PriceTicks, QuantityLots: 0})...)
-		}
-	}
-}
-
-func (s *Simulator) repairSpread(anchorMid int64, force bool) []book.LevelUpdate {
-	snap := s.book.Snapshot()
-	if len(snap.Bids) == 0 || len(snap.Asks) == 0 || (!force && snap.Asks[0].PriceTicks-snap.Bids[0].PriceTicks <= maxSpreadTicks) {
-		return nil
-	}
-
-	bidPrice, askPrice := recoveryPrices(anchorMid)
-	changes := s.apply(book.LevelUpdate{Side: book.SideBid, PriceTicks: bidPrice, QuantityLots: repairQuantity(len(snap.Bids))})
-	changes = append(changes, s.apply(book.LevelUpdate{Side: book.SideAsk, PriceTicks: askPrice, QuantityLots: repairQuantity(len(snap.Asks))})...)
 	return changes
 }
 
-func (s *Simulator) apply(update book.LevelUpdate) []book.LevelUpdate {
-	if err := s.book.Apply(update); err != nil {
-		panic("simulator generated invalid book update")
+func (s *Simulator) primaryCommand(timeMS int64, anchorMid int64) commandResult {
+	if s.rng.IntN(10) == 9 {
+		return commandResult{BookChanges: s.cancelRandomOrder()}
 	}
-	update.Seq = s.book.Snapshot().Seq
-	return []book.LevelUpdate{update}
+	return s.submitRandomOrder(timeMS, anchorMid)
+}
+
+func (s *Simulator) submitRandomOrder(timeMS int64, anchorMid int64) commandResult {
+	side := matching.Buy
+	tradeSide := "buy"
+	if s.rng.IntN(2) == 0 {
+		side = matching.Sell
+		tradeSide = "sell"
+	}
+	price := anchorMid + int64(s.rng.IntN(int(quoteRadiusTicks*2+1))) - quoteRadiusTicks
+	price = clampMidTicks(price)
+	quantity := int64(s.rng.IntN(int(maxTradeLots))) + 1
+	result, err := s.engine.Submit(side, price, quantity)
+	if errors.Is(err, matching.ErrCapacity) {
+		return commandResult{}
+	}
+	if err != nil {
+		panic("simulator generated invalid order")
+	}
+	trades := s.tradesFromFills(timeMS, tradeSide, result.Fills)
+	return commandResult{Trades: trades, BookChanges: result.BookChanges}
+}
+
+func (s *Simulator) cancelRandomOrder() []model.LevelChange {
+	orders := s.engine.Orders()
+	if len(orders) == 0 {
+		return nil
+	}
+	order := orders[s.rng.IntN(len(orders))]
+	changes, err := s.engine.Cancel(order.ID)
+	if err != nil {
+		panic("simulator generated invalid cancellation")
+	}
+	return changes
+}
+
+func (s *Simulator) tradesFromFills(timeMS int64, side string, fills []matching.Fill) []model.Trade {
+	if len(fills) == 0 {
+		return nil
+	}
+	trades := make([]model.Trade, 0, len(fills))
+	for _, fill := range fills {
+		trades = append(trades, model.Trade{
+			ID:           s.nextTrade,
+			TimeMS:       timeMS,
+			PriceTicks:   fill.PriceTicks,
+			QuantityLots: fill.QuantityLots,
+			Side:         side,
+		})
+		s.nextTrade++
+	}
+	return trades
 }
 
 func clampMidTicks(midTicks int64) int64 {
@@ -246,128 +200,23 @@ func clampMidTicks(midTicks int64) int64 {
 	return midTicks
 }
 
-func repairPrice(snap model.BookSnapshot, side string) (int64, bool) {
-	if side == book.SideBid {
-		if price := snap.Bids[len(snap.Bids)-1].PriceTicks - 1; canPlaceBid(snap, price) {
-			return price, true
-		}
-		for price := snap.Asks[0].PriceTicks - 1; price >= minPriceTicks; price-- {
-			if canPlaceBid(snap, price) {
-				return price, true
-			}
-			if price == minPriceTicks {
-				break
-			}
-		}
-		return 0, false
-	}
-
-	if price := snap.Asks[len(snap.Asks)-1].PriceTicks + 1; canPlaceAsk(snap, price) {
-		return price, true
-	}
-	for price := snap.Bids[0].PriceTicks + 1; price <= maxPriceTicks; price++ {
-		if canPlaceAsk(snap, price) {
-			return price, true
-		}
-		if price == maxPriceTicks {
-			break
-		}
-	}
-	return 0, false
-}
-
 func bookMidpoint(snap model.BookSnapshot) int64 {
-	return (snap.Bids[0].PriceTicks + snap.Asks[0].PriceTicks) / 2
+	if len(snap.Bids) == 0 && len(snap.Asks) == 0 {
+		return defaultMidTicks
+	}
+	if len(snap.Bids) == 0 {
+		return clampMidTicks(snap.Asks[0].PriceTicks)
+	}
+	if len(snap.Asks) == 0 {
+		return clampMidTicks(snap.Bids[0].PriceTicks)
+	}
+	return clampMidTicks((snap.Bids[0].PriceTicks + snap.Asks[0].PriceTicks) / 2)
 }
 
-func changesExposeWideSpread(snap model.BookSnapshot, changes []book.LevelUpdate) bool {
-	for _, change := range changes {
-		switch change.Side {
-		case book.SideBid:
-			snap.Bids = applyLevelChange(snap.Bids, change.PriceTicks, change.QuantityLots, true)
-		case book.SideAsk:
-			snap.Asks = applyLevelChange(snap.Asks, change.PriceTicks, change.QuantityLots, false)
-		}
-		if len(snap.Bids) > 0 && len(snap.Asks) > 0 && snap.Asks[0].PriceTicks-snap.Bids[0].PriceTicks > maxSpreadTicks {
-			return true
-		}
+func seededQuantity(index int) int64 {
+	quantity := int64(10000 + (index%10)*1000)
+	if quantity > maxBookLots {
+		return maxBookLots
 	}
-	return false
-}
-
-func applyLevelChange(levels []model.Level, priceTicks int64, quantityLots int64, desc bool) []model.Level {
-	out := make([]model.Level, 0, len(levels)+1)
-	inserted := false
-	for _, level := range levels {
-		if level.PriceTicks == priceTicks {
-			if quantityLots > 0 {
-				out = append(out, model.Level{PriceTicks: priceTicks, QuantityLots: quantityLots})
-			}
-			inserted = true
-			continue
-		}
-		if !inserted && quantityLots > 0 && levelComesBefore(priceTicks, level.PriceTicks, desc) {
-			out = append(out, model.Level{PriceTicks: priceTicks, QuantityLots: quantityLots})
-			inserted = true
-		}
-		out = append(out, level)
-	}
-	if !inserted && quantityLots > 0 {
-		out = append(out, model.Level{PriceTicks: priceTicks, QuantityLots: quantityLots})
-	}
-	return out
-}
-
-func levelComesBefore(candidate int64, existing int64, desc bool) bool {
-	if desc {
-		return candidate > existing
-	}
-	return candidate < existing
-}
-
-func recoveryPrices(anchorMid int64) (int64, int64) {
-	bidPrice := anchorMid - maxSpreadTicks/2
-	askPrice := anchorMid + maxSpreadTicks/2
-	if bidPrice < minPriceTicks {
-		askPrice += minPriceTicks - bidPrice
-		bidPrice = minPriceTicks
-	}
-	if askPrice > maxPriceTicks {
-		bidPrice -= askPrice - maxPriceTicks
-		askPrice = maxPriceTicks
-	}
-	if bidPrice < minPriceTicks {
-		bidPrice = minPriceTicks
-	}
-	if askPrice > maxPriceTicks {
-		askPrice = maxPriceTicks
-	}
-	return bidPrice, askPrice
-}
-
-func canPlaceBid(snap model.BookSnapshot, price int64) bool {
-	if price < minPriceTicks || price > maxPriceTicks || price >= snap.Asks[0].PriceTicks {
-		return false
-	}
-	return !containsPrice(snap.Bids, price)
-}
-
-func canPlaceAsk(snap model.BookSnapshot, price int64) bool {
-	if price < minPriceTicks || price > maxPriceTicks || price <= snap.Bids[0].PriceTicks {
-		return false
-	}
-	return !containsPrice(snap.Asks, price)
-}
-
-func containsPrice(levels []model.Level, price int64) bool {
-	for _, level := range levels {
-		if level.PriceTicks == price {
-			return true
-		}
-	}
-	return false
-}
-
-func repairQuantity(index int) int64 {
-	return int64(10000 + (index%10)*1000)
+	return quantity
 }

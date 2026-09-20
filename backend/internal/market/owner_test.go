@@ -63,6 +63,9 @@ func TestStartupWarmupUsesLatestInitializedTradeAsFixedReference(t *testing.T) {
 		t.Fatalf("startup publication has no retained initialized trades")
 	}
 	latestInitialized := pub.Trades[len(pub.Trades)-1]
+	if latestInitialized.PriceTicks <= 0 {
+		t.Fatalf("latest initialized trade price = %d, want positive warmup price", latestInitialized.PriceTicks)
+	}
 	if pub.ReferencePriceTicks != latestInitialized.PriceTicks {
 		t.Fatalf("reference price = %d, want latest initialized trade price %d", pub.ReferencePriceTicks, latestInitialized.PriceTicks)
 	}
@@ -477,9 +480,7 @@ func collectExpectedSimulatorTrades(t *testing.T, cfg market.Config, count int) 
 	var trades []model.Trade
 	for i := 0; i < 200 && len(trades) < count; i++ {
 		event := simulator.Next()
-		if event.Trade != nil {
-			trades = append(trades, *event.Trade)
-		}
+		trades = append(trades, event.Trades...)
 	}
 	if len(trades) < count {
 		t.Fatalf("simulator generated %d trades, want %d", len(trades), count)

@@ -46,7 +46,7 @@ func TestMaintainLiquidityRestoresBoundaryBooks(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			engine := newMaintenanceTestEngine(t, 1_000, 100_000, 1_024)
+			engine := newMaintenanceTestEngine(t, 100_000, 100_000, 1_024)
 			if tt.seed != nil {
 				tt.seed(t, engine)
 			}
@@ -60,13 +60,13 @@ func TestMaintainLiquidityRestoresBoundaryBooks(t *testing.T) {
 			after := engine.Snapshot()
 			assertMaintainedBook(t, after)
 			assertReplayLevelChanges(t, before, changes, after)
-			assertPassiveMaintenanceChanges(t, tt.anchor, changes)
+			assertPassiveMaintenanceChanges(t, before, changes)
 		})
 	}
 }
 
 func TestMaintainLiquidityReservesCapacityByCancelingOldestDuplicateOrders(t *testing.T) {
-	engine := newMaintenanceTestEngine(t, 1_000, 100_000, 1_024)
+	engine := newMaintenanceTestEngine(t, 100_000, 100_000, 1_024)
 	seedTwentyByTwentyBook(t, engine)
 	for i := 0; i < 984; i++ {
 		mustSubmitResting(t, engine, matching.Buy, 6_399_990, 1)
@@ -107,7 +107,7 @@ func TestMaintainLiquidityDoesNotOverflowPopulatedFullLevels(t *testing.T) {
 func TestMaintainLiquidityBudgetErrorDoesNotMutateOrPublishInvalidChanges(t *testing.T) {
 	for _, budget := range []int{0, 1} {
 		t.Run("budget", func(t *testing.T) {
-			engine := newMaintenanceTestEngine(t, 1_000, 100_000, 1_024)
+			engine := newMaintenanceTestEngine(t, 100_000, 100_000, 1_024)
 			mustSubmitResting(t, engine, matching.Buy, 6_399_990, 5)
 			mustSubmitResting(t, engine, matching.Sell, 6_400_010, 5)
 			beforeSnapshot := engine.Snapshot()
@@ -131,7 +131,7 @@ func TestMaintainLiquidityBudgetErrorDoesNotMutateOrPublishInvalidChanges(t *tes
 }
 
 func TestMaintainLiquidityReplayAndRestingQuantityComeOnlyFromCancelsAndAdds(t *testing.T) {
-	engine := newMaintenanceTestEngine(t, 1_000, 100_000, 1_024)
+	engine := newMaintenanceTestEngine(t, 100_000, 100_000, 1_024)
 	seedTwentyByTwentyBook(t, engine)
 	beforeSnapshot := engine.Snapshot()
 	beforeOrders := ordersByID(engine.Orders())
@@ -152,8 +152,9 @@ func TestMaintainLiquidityReplayAndRestingQuantityComeOnlyFromCancelsAndAdds(t *
 func seedTwentyByTwentyBook(t *testing.T, engine *matching.Engine) {
 	t.Helper()
 	for i := 0; i < 20; i++ {
-		mustSubmitResting(t, engine, matching.Buy, 6_399_990-int64(i), 1)
-		mustSubmitResting(t, engine, matching.Sell, 6_400_010+int64(i), 1)
+		quantity := seededMaintenanceQuantity(i + 1)
+		mustSubmitResting(t, engine, matching.Buy, 6_399_990-int64(i), quantity)
+		mustSubmitResting(t, engine, matching.Sell, 6_400_010+int64(i), quantity)
 	}
 }
 
@@ -235,25 +236,60 @@ func assertLevelCaps(t *testing.T, snapshot model.BookSnapshot, maxLevelLots int
 	}
 }
 
-func assertPassiveMaintenanceChanges(t *testing.T, anchorMid int64, changes []model.LevelChange) {
+func assertPassiveMaintenanceChanges(t *testing.T, before model.BookSnapshot, changes []model.LevelChange) {
 	t.Helper()
+	replayed := cloneMaintenanceBook(before)
 	for _, change := range changes {
 		if change.QuantityLots == 0 {
+			applyMaintenanceChange(t, &replayed, change)
 			continue
 		}
 		switch change.Side {
 		case model.BookSideBid:
-			if change.PriceTicks >= anchorMid {
-				t.Fatalf("maintenance bid change %+v is not passive below anchor %d", change, anchorMid)
+			if len(replayed.Asks) > 0 && change.PriceTicks >= replayed.Asks[0].PriceTicks {
+				t.Fatalf("maintenance bid change %+v crosses current best ask %+v", change, replayed.Asks[0])
+			}
+			if !hasMaintenanceLevel(replayed.Bids, change.PriceTicks) && change.QuantityLots != seededMaintenanceQuantity(len(replayed.Bids)+1) {
+				t.Fatalf("maintenance bid add %+v quantity, want seeded %d", change, seededMaintenanceQuantity(len(replayed.Bids)+1))
 			}
 		case model.BookSideAsk:
-			if change.PriceTicks <= anchorMid {
-				t.Fatalf("maintenance ask change %+v is not passive above anchor %d", change, anchorMid)
+			if len(replayed.Bids) > 0 && change.PriceTicks <= replayed.Bids[0].PriceTicks {
+				t.Fatalf("maintenance ask change %+v crosses current best bid %+v", change, replayed.Bids[0])
+			}
+			if !hasMaintenanceLevel(replayed.Asks, change.PriceTicks) && change.QuantityLots != seededMaintenanceQuantity(len(replayed.Asks)+1) {
+				t.Fatalf("maintenance ask add %+v quantity, want seeded %d", change, seededMaintenanceQuantity(len(replayed.Asks)+1))
 			}
 		default:
 			t.Fatalf("maintenance change has invalid side: %+v", change)
 		}
+		applyMaintenanceChange(t, &replayed, change)
 	}
+}
+
+func applyMaintenanceChange(t *testing.T, book *model.BookSnapshot, change model.LevelChange) {
+	t.Helper()
+	book.Seq = change.Seq
+	switch change.Side {
+	case model.BookSideBid:
+		book.Bids = applyMaintenanceLevel(book.Bids, change.PriceTicks, change.QuantityLots, true)
+	case model.BookSideAsk:
+		book.Asks = applyMaintenanceLevel(book.Asks, change.PriceTicks, change.QuantityLots, false)
+	default:
+		t.Fatalf("change side = %q", change.Side)
+	}
+}
+
+func hasMaintenanceLevel(levels []model.Level, priceTicks int64) bool {
+	for _, level := range levels {
+		if level.PriceTicks == priceTicks {
+			return true
+		}
+	}
+	return false
+}
+
+func seededMaintenanceQuantity(index int) int64 {
+	return int64(10_000 + (index%10)*1_000)
 }
 
 func assertReplayLevelChanges(t *testing.T, before model.BookSnapshot, changes []model.LevelChange, want model.BookSnapshot) {
