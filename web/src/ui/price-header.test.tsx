@@ -6,6 +6,17 @@ import type { MarketRuntimeSnapshot } from "../domain/market-view";
 import { createInitialSnapshot } from "../runtime/create-market-runtime";
 import { PriceHeader } from "./price-header";
 
+const originalTZ = process.env.TZ;
+const indiaOffset = /GMT\+0?5:?30/;
+
+function restoreTZ() {
+  if (originalTZ === undefined) {
+    delete process.env.TZ;
+    return;
+  }
+  process.env.TZ = originalTZ;
+}
+
 function snapshot(overrides: Partial<MarketRuntimeSnapshot> = {}): MarketRuntimeSnapshot {
   const base = createInitialSnapshot("1m");
   return {
@@ -68,6 +79,7 @@ function snapshot(overrides: Partial<MarketRuntimeSnapshot> = {}): MarketRuntime
 
 afterEach(() => {
   cleanup();
+  restoreTZ();
 });
 
 describe("PriceHeader", () => {
@@ -124,5 +136,31 @@ describe("PriceHeader", () => {
     expect(movement.textContent).toContain("-");
     expect(movement.className).not.toContain("positive");
     expect(movement.className).not.toContain("negative");
+  });
+
+  it("shows the latest trade time in the viewer local offset", () => {
+    process.env.TZ = "Asia/Kolkata";
+
+    render(<PriceHeader snapshot={snapshot({
+      trades: {
+        ...createInitialSnapshot("1m").trades,
+        status: "ready",
+        value: {
+          session: "session-1",
+          symbol: "BTC-USD",
+          trades: [{
+            id: 8,
+            timeMs: Date.parse("2024-01-01T23:30:00Z"),
+            priceTicks: 10_050,
+            quantityLots: 4,
+            side: "buy",
+          }],
+        },
+        latestPriceTicks: 10_050,
+        latestTradeId: 8,
+      },
+    })} />);
+
+    expect(screen.getByText(/Last trade/).textContent).toMatch(new RegExp(`^Last trade 05:00:00 ${indiaOffset.source}$`));
   });
 });

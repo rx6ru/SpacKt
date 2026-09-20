@@ -60,8 +60,13 @@ function formatMoney(value: string) {
   return `${grouped}.${fractionPart.padEnd(2, "0").slice(0, 2)}`;
 }
 
-function formatUTC(timeMs: number) {
-  return new Date(timeMs).toISOString().slice(11, 19);
+function formatLocalTime(timeMs: number) {
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).format(new Date(timeMs));
 }
 
 async function expectTextContent(locator: Locator, pattern: RegExp | string) {
@@ -269,12 +274,12 @@ test("shows a readable delayed-history window after a live seed", async ({ page,
   try {
     await chart.getByRole("radio", { name: "1s" }).click();
     await expect(chart.getByText("Loading 1s history")).toBeVisible();
-    const legendUTC = chart
+    const legendLocalTime = chart
       .locator(".legend-cell")
-      .filter({ has: page.getByText("UTC", { exact: true }) })
+      .filter({ has: page.getByText("Local time", { exact: true }) })
       .locator("strong");
     await expect
-      .poll(async () => (await legendUTC.textContent())?.trim() ?? "", { timeout: 20_000 })
+      .poll(async () => (await legendLocalTime.textContent())?.trim() ?? "", { timeout: 20_000 })
       .not.toBe("-");
 
     releaseHeldHistory();
@@ -286,20 +291,20 @@ test("shows a readable delayed-history window after a live seed", async ({ page,
     };
     expect(history.candles.length).toBeGreaterThan(40);
     expect(typeof history.candles[0]?.t).toBe("number");
-    const firstUTCs = new Set(history.candles.slice(0, 2).map((candle) => formatUTC(candle.t)));
-    const historicalUTCs = new Set(history.candles.slice(2, -2).map((candle) => formatUTC(candle.t)));
-    const latestUTC = formatUTC(history.candles[history.candles.length - 1]!.t);
+    const firstLocalTimes = new Set(history.candles.slice(0, 2).map((candle) => formatLocalTime(candle.t)));
+    const historicalLocalTimes = new Set(history.candles.slice(2, -2).map((candle) => formatLocalTime(candle.t)));
+    const latestLocalTime = formatLocalTime(history.candles[history.candles.length - 1]!.t);
     const frame = chart.locator(".chart-frame");
     const box = await frame.boundingBox();
     expect(box).not.toBeNull();
 
     await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
     await expect(chart.getByText("Inspecting candle")).toBeVisible();
-    const inspectedUTC = (await legendUTC.textContent())?.trim() ?? "";
+    const inspectedLocalTime = (await legendLocalTime.textContent())?.trim() ?? "";
 
-    expect(firstUTCs.has(inspectedUTC)).toBe(false);
-    expect(inspectedUTC).not.toBe(latestUTC);
-    expect(historicalUTCs.has(inspectedUTC)).toBe(true);
+    expect(firstLocalTimes.has(inspectedLocalTime)).toBe(false);
+    expect(inspectedLocalTime).not.toBe(latestLocalTime);
+    expect(historicalLocalTimes.has(inspectedLocalTime)).toBe(true);
   } finally {
     releaseHeldHistory();
     await page.unroute("**/api/candles?**").catch(() => undefined);
@@ -366,16 +371,16 @@ test("keeps the interior history viewport after same-session reconnect", async (
   await expect(chart.getByRole("radio", { name: "1m" })).toHaveAttribute("aria-checked", "true");
   await expect(chart.getByText("Loading 1m history")).toBeHidden({ timeout: 20_000 });
 
-  const legendUTC = chart
+  const legendLocalTime = chart
     .locator(".legend-cell")
-    .filter({ has: page.getByText("UTC", { exact: true }) })
+    .filter({ has: page.getByText("Local time", { exact: true }) })
     .locator("strong");
   const legendClose = chart
     .locator(".legend-cell")
     .filter({ has: page.getByText("C", { exact: true }) })
     .locator("strong");
   await expect
-    .poll(async () => (await legendUTC.textContent())?.trim() ?? "", { timeout: 20_000 })
+    .poll(async () => (await legendLocalTime.textContent())?.trim() ?? "", { timeout: 20_000 })
     .not.toBe("-");
   await expect(legendClose).toHaveText(moneyText, { timeout: 20_000 });
 
@@ -441,10 +446,10 @@ test("keeps the interior history viewport after same-session reconnect", async (
 
     await expect(chart.getByText("Loading 1m history")).toBeVisible({ timeout: 20_000 });
     await expect.poll(() => heldHistory !== null, { timeout: 20_000 }).toBe(true);
-    await expect(legendUTC).toHaveText("-", { timeout: 20_000 });
+    await expect(legendLocalTime).toHaveText("-", { timeout: 20_000 });
 
     await releaseBufferedCandles();
-    await expect(legendUTC).toHaveText(/\d{2}:\d{2}:\d{2}/, { timeout: 20_000 });
+    await expect(legendLocalTime).toHaveText(/\d{2}:\d{2}:\d{2}/, { timeout: 20_000 });
     await expect(legendClose).toHaveText(moneyText, { timeout: 20_000 });
     await expect(chart.getByText("Loading 1m history")).toBeVisible();
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -461,20 +466,20 @@ test("keeps the interior history viewport after same-session reconnect", async (
     };
     expect(history.candles.length).toBeGreaterThan(40);
     expect(typeof history.candles[0]?.t).toBe("number");
-    const firstUTCs = new Set(history.candles.slice(0, 2).map((candle) => formatUTC(candle.t)));
-    const historicalUTCs = new Set(history.candles.slice(2, -2).map((candle) => formatUTC(candle.t)));
-    const latestUTC = formatUTC(history.candles[history.candles.length - 1]!.t);
+    const firstLocalTimes = new Set(history.candles.slice(0, 2).map((candle) => formatLocalTime(candle.t)));
+    const historicalLocalTimes = new Set(history.candles.slice(2, -2).map((candle) => formatLocalTime(candle.t)));
+    const latestLocalTime = formatLocalTime(history.candles[history.candles.length - 1]!.t);
     const frame = chart.locator(".chart-frame");
     const box = await frame.boundingBox();
     expect(box).not.toBeNull();
 
     await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
     await expect(chart.getByText("Inspecting candle")).toBeVisible();
-    const inspectedUTC = (await legendUTC.textContent())?.trim() ?? "";
+    const inspectedLocalTime = (await legendLocalTime.textContent())?.trim() ?? "";
 
-    expect(firstUTCs.has(inspectedUTC)).toBe(false);
-    expect(inspectedUTC).not.toBe(latestUTC);
-    expect(historicalUTCs.has(inspectedUTC)).toBe(true);
+    expect(firstLocalTimes.has(inspectedLocalTime)).toBe(false);
+    expect(inspectedLocalTime).not.toBe(latestLocalTime);
+    expect(historicalLocalTimes.has(inspectedLocalTime)).toBe(true);
   } finally {
     await releaseBufferedCandles().catch(() => undefined);
     releaseHeldHistory();
@@ -517,7 +522,7 @@ test("supports keyboard candle inspection", async ({ page }) => {
   await gotoMarket(page);
 
   const chart = region(page, "Candlestick chart");
-  await expect(chart.getByText("UTC")).toBeVisible();
+  await expect(chart.getByText("Local time")).toBeVisible();
   await expect(chart.getByText(/\bO\b/)).toBeVisible();
   await expect(chart.getByText(/\bH\b/)).toBeVisible();
   await expect(chart.getByText(/\bL\b/)).toBeVisible();

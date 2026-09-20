@@ -2,6 +2,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Candle } from "../domain/model";
 import { mountCandleChart } from "./adapter";
 
+const originalTZ = process.env.TZ;
+const newYorkDst = /(?:EDT|GMT-0?4(?::?00)?)/;
+
+function restoreTZ() {
+  if (originalTZ === undefined) {
+    delete process.env.TZ;
+    return;
+  }
+  process.env.TZ = originalTZ;
+}
+
 const chartPort = vi.hoisted(() => {
   type CrosshairHandler = (param: {
     point?: { x: number; y: number };
@@ -108,8 +119,20 @@ function mounted(onInspect = vi.fn(), onFollowingChange = vi.fn(), initialBarSpa
   return mountCandleChart(container, { onInspect, onFollowingChange, initialBarSpacing });
 }
 
-function createdChartOptions(): { timeScale?: { minBarSpacing?: number } } {
-  const call = chartPort.createChart.mock.calls[0] as unknown as [HTMLElement, { timeScale?: { minBarSpacing?: number } }?] | undefined;
+function createdChartOptions(): {
+  localization?: { timeFormatter?: (time: number) => string };
+  timeScale?: {
+    minBarSpacing?: number;
+    tickMarkFormatter?: (time: number, tickMarkType: number, locale: string) => string;
+  };
+} {
+  const call = chartPort.createChart.mock.calls[0] as unknown as [HTMLElement, {
+    localization?: { timeFormatter?: (time: number) => string };
+    timeScale?: {
+      minBarSpacing?: number;
+      tickMarkFormatter?: (time: number, tickMarkType: number, locale: string) => string;
+    };
+  }?] | undefined;
   expect(call).toBeDefined();
   return call?.[1] ?? {};
 }
@@ -127,6 +150,11 @@ function crosshair(timeSeconds: number, data: unknown = {}): void {
 describe("mountCandleChart", () => {
   beforeEach(() => {
     chartPort.reset();
+    restoreTZ();
+  });
+
+  afterEach(() => {
+    restoreTZ();
   });
 
   it("creates a v5 candlestick series with two-decimal price formatting", () => {
@@ -312,6 +340,26 @@ describe("mountCandleChart", () => {
       highTicks: 10_250,
       lowTicks: 9_975,
     }));
+  });
+
+  it("formats chart axis and crosshair labels in the viewer local zone", () => {
+    process.env.TZ = "America/New_York";
+
+    mounted();
+    const options = createdChartOptions();
+
+    expect(options.localization?.timeFormatter).toEqual(expect.any(Function));
+    expect(options.timeScale?.tickMarkFormatter).toEqual(expect.any(Function));
+    const timeFormatter = options.localization?.timeFormatter;
+    const tickMarkFormatter = options.timeScale?.tickMarkFormatter;
+    if (!timeFormatter || !tickMarkFormatter) return;
+
+    const chartTime = Date.parse("2024-03-10T07:30:00Z") / 1_000;
+    expect(timeFormatter(chartTime)).toMatch(
+      new RegExp(`03:30:00 ${newYorkDst.source}`),
+    );
+    expect(tickMarkFormatter(chartTime, 4, "en-US")).toBe("03:30:00");
+    expect(tickMarkFormatter(chartTime, 3, "en-US")).toBe("03:30");
   });
 
   it("passes first sorted history to setData", () => {

@@ -7,6 +7,17 @@ import type { Candle, Interval } from "../domain/model";
 import { createInitialSnapshot } from "../runtime/create-market-runtime";
 import { MarketChart } from "./market-chart";
 
+const originalTZ = process.env.TZ;
+const indiaOffset = /GMT\+0?5:?30/;
+
+function restoreTZ() {
+  if (originalTZ === undefined) {
+    delete process.env.TZ;
+    return;
+  }
+  process.env.TZ = originalTZ;
+}
+
 const chartPort = vi.hoisted(() => {
   type Adapter = {
     setCandles: ReturnType<typeof vi.fn>;
@@ -152,6 +163,7 @@ async function waitForChartMount() {
 afterEach(() => {
   cleanup();
   chartPort.reset();
+  restoreTZ();
 });
 
 describe("MarketChart", () => {
@@ -410,5 +422,30 @@ describe("MarketChart", () => {
 
     expect(screen.getByText("Inspecting candle")).toBeTruthy();
     expect(screen.getByText("102.00")).toBeTruthy();
+  });
+
+  it("shows the active candle time in the viewer local zone", () => {
+    process.env.TZ = "Asia/Kolkata";
+
+    render(<MarketChart snapshot={snapshot({
+      candles: {
+        ...createInitialSnapshot("1m").candles,
+        status: "ready",
+        historyStatus: "ready",
+        interval: "1m",
+        requestId: 1,
+        candles: [candle(Date.parse("2024-01-01T23:30:00Z"), 10_050)],
+      },
+    })} onSelectInterval={vi.fn()} />);
+
+    const timeCell = screen
+      .getByText("Local time")
+      .closest(".legend-cell");
+
+    expect(timeCell).not.toBeNull();
+    expect(timeCell?.textContent).toContain("05:00:00");
+    expect(screen.getByLabelText(/Candlestick chart summary/).getAttribute("aria-label")).toMatch(
+      new RegExp(`05:00:00 ${indiaOffset.source}`),
+    );
   });
 });

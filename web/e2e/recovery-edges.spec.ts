@@ -37,15 +37,20 @@ async function expectLiveWithPrice(page: Page) {
   await expect(latestPrice(page)).toHaveText(moneyText, { timeout: 20_000 });
 }
 
-function chartUTC(page: Page) {
+function chartLocalTime(page: Page) {
   return region(page, "Candlestick chart")
     .locator(".legend-cell")
-    .filter({ has: page.getByText("UTC", { exact: true }) })
+    .filter({ has: page.getByText("Local time", { exact: true }) })
     .locator("strong");
 }
 
-function formatUTC(timeMs: number) {
-  return new Date(timeMs).toISOString().slice(11, 19);
+function formatLocalTime(timeMs: number) {
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).format(new Date(timeMs));
 }
 
 async function bookSeq(page: Page) {
@@ -152,8 +157,8 @@ test("ignores old interval history after a newer selection", async ({ page, requ
     releaseOldHistory = resolve;
   });
   let oldHistoryReleased = false;
-  let oldHistoryUTC = "";
-  let oneSecondLatestUTC = "";
+  let oldHistoryLocalTime = "";
+  let oneSecondLatestLocalTime = "";
   const release = () => {
     if (!oldHistoryReleased) {
       oldHistoryReleased = true;
@@ -174,7 +179,7 @@ test("ignores old interval history after a newer selection", async ({ page, requ
     if (interval === "1s") {
       const parsed = JSON.parse(body) as { candles: Array<{ t: number }> };
       const latest = parsed.candles.at(-1);
-      oneSecondLatestUTC = latest ? formatUTC(latest.t) : "";
+      oneSecondLatestLocalTime = latest ? formatLocalTime(latest.t) : "";
       await route.fulfill({
         status: response.status(),
         headers: await response.headers(),
@@ -185,7 +190,7 @@ test("ignores old interval history after a newer selection", async ({ page, requ
 
     const oldParsed = JSON.parse(body) as { candles: Array<{ t: number }> };
     const oldLatest = oldParsed.candles.at(-1);
-    oldHistoryUTC = oldLatest ? formatUTC(oldLatest.t) : "";
+    oldHistoryLocalTime = oldLatest ? formatLocalTime(oldLatest.t) : "";
     await oldHistoryHeld;
     await route.fulfill({
       status: response.status(),
@@ -205,11 +210,11 @@ test("ignores old interval history after a newer selection", async ({ page, requ
     await expect(chart.getByRole("radio", { name: "1s" })).toHaveAttribute("aria-checked", "true");
     await expect(chart.getByText("Loading 5m history")).toBeHidden();
     await expect(chart.getByText("Loading 1s history")).toBeHidden({ timeout: 20_000 });
-    await expect(chartUTC(page)).not.toHaveText("-", { timeout: 20_000 });
-    await expect.poll(() => oneSecondLatestUTC).not.toBe("");
-    await expect(chartUTC(page)).toHaveText(oneSecondLatestUTC);
-    if (oldHistoryUTC) {
-      await expect(chartUTC(page)).not.toHaveText(oldHistoryUTC);
+    await expect(chartLocalTime(page)).not.toHaveText("-", { timeout: 20_000 });
+    await expect.poll(() => oneSecondLatestLocalTime).not.toBe("");
+    await expect(chartLocalTime(page)).toHaveText(oneSecondLatestLocalTime);
+    if (oldHistoryLocalTime) {
+      await expect(chartLocalTime(page)).not.toHaveText(oldHistoryLocalTime);
     }
     await expect(chart.getByText("1.23")).toBeHidden();
   } finally {
@@ -246,7 +251,7 @@ test("renders live candles after a valid empty history", async ({ page, request 
     await expect.poll(() => fulfilledEmptyHistory).toBe(true);
     await expect(chart.getByText("No history yet. Live candles will appear here.")).toBeVisible();
     await releaseBufferedCandleFrames(page);
-    await expect(chartUTC(page)).not.toHaveText("-", { timeout: 20_000 });
+    await expect(chartLocalTime(page)).not.toHaveText("-", { timeout: 20_000 });
     await expect(chart.getByText("No history yet. Live candles will appear here.")).toBeHidden();
     await expect(chart.getByRole("radio", { name: "1s" })).toHaveAttribute("aria-checked", "true");
     await expect(chart.getByText("Chart unavailable")).toBeHidden();

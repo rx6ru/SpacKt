@@ -30,10 +30,10 @@ function chart(page: Page) {
   return region(page, "Candlestick chart");
 }
 
-function chartUTC(page: Page) {
+function chartLocalTime(page: Page) {
   return chart(page)
     .locator(".legend-cell")
-    .filter({ has: page.getByText("UTC", { exact: true }) })
+    .filter({ has: page.getByText("Local time", { exact: true }) })
     .locator("strong");
 }
 
@@ -48,7 +48,7 @@ async function waitForLiveChart(page: Page) {
   await expect(chart(page).getByText("Loading 1m history")).toBeHidden({
     timeout: 20_000,
   });
-  await expect(chartUTC(page)).toHaveText(/\d{2}:\d{2}:\d{2}/, {
+  await expect(chartLocalTime(page)).toHaveText(/\d{2}:\d{2}:\d{2}/, {
     timeout: 20_000,
   });
   await expect(chart(page).getByText("Chart unavailable")).toBeHidden();
@@ -60,52 +60,52 @@ async function selectInterval(page: Page, interval: "1s" | "1m" | "5m") {
   await panel.getByRole("radio", { name: interval }).click();
   await expect(panel.getByRole("radio", { name: interval })).toHaveAttribute("aria-checked", "true");
   await expect(panel.getByText(`Loading ${interval} history`)).toBeHidden({ timeout: 20_000 });
-  await expect(chartUTC(page)).toHaveText(/\d{2}:\d{2}:\d{2}/, { timeout: 20_000 });
+  await expect(chartLocalTime(page)).toHaveText(/\d{2}:\d{2}:\d{2}/, { timeout: 20_000 });
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 }
 
-async function waitForUtcAdvance(page: Page, minimumSeconds: number) {
-  const before = await currentUtcSeconds(page);
+async function waitForLocalTimeAdvance(page: Page, minimumSeconds: number) {
+  const before = await currentLocalSeconds(page);
   await expect
-    .poll(async () => utcDelta(await currentUtcSeconds(page), before), {
+    .poll(async () => localDelta(await currentLocalSeconds(page), before), {
       timeout: Math.max(20_000, (minimumSeconds + 10) * 1_000),
     })
     .toBeGreaterThanOrEqual(minimumSeconds);
 }
 
 async function waitForLiveEdgeAdvance(page: Page, minimumSeconds: number) {
-  await waitForUtcAdvance(page, minimumSeconds);
+  await waitForLocalTimeAdvance(page, minimumSeconds);
   const box = await chartFrame(page).boundingBox();
   expect(box).not.toBeNull();
   await page.mouse.move(box!.x - 20, box!.y - 20);
-  const currentLatest = await currentUtcSeconds(page);
+  const currentLatest = await currentLocalSeconds(page);
   await expectReadableBodiesAtLiveEdge(page);
   const rightmost = await hoverRightmostVisibleCandle(page);
-  expect(utcDistanceSeconds(rightmost, currentLatest)).toBeLessThanOrEqual(2);
+  expect(localDistanceSeconds(rightmost, currentLatest)).toBeLessThanOrEqual(2);
 }
 
-async function currentUtcSeconds(page: Page) {
-  const text = ((await chartUTC(page).textContent()) ?? "").trim();
-  return parseUtcSeconds(text);
+async function currentLocalSeconds(page: Page) {
+  const text = ((await chartLocalTime(page).textContent()) ?? "").trim();
+  return parseLocalSeconds(text);
 }
 
-function parseUtcSeconds(text: string) {
+function parseLocalSeconds(text: string) {
   const match = text.match(/^(\d{2}):(\d{2}):(\d{2})$/);
   expect(match).not.toBeNull();
   return Number(match![1]) * 3_600 + Number(match![2]) * 60 + Number(match![3]);
 }
 
-function utcDelta(next: number, previous: number) {
+function localDelta(next: number, previous: number) {
   const delta = next - previous;
   return delta >= 0 ? delta : delta + 24 * 3_600;
 }
 
-function utcAgeSeconds(older: number, newer: number) {
-  return utcDelta(newer, older);
+function localAgeSeconds(older: number, newer: number) {
+  return localDelta(newer, older);
 }
 
-function utcDistanceSeconds(left: number, right: number) {
-  return Math.min(utcDelta(left, right), utcDelta(right, left));
+function localDistanceSeconds(left: number, right: number) {
+  return Math.min(localDelta(left, right), localDelta(right, left));
 }
 
 async function hoverRightmostVisibleCandle(page: Page) {
@@ -117,14 +117,14 @@ async function hoverRightmostVisibleCandle(page: Page) {
     for (const yFraction of yFractions) {
       await page.mouse.move(x, plot.y + plot.height * yFraction);
       if (await chart(page).getByText("Inspecting candle").isVisible().catch(() => false)) {
-        const text = ((await chartUTC(page).textContent()) ?? "").trim();
-        return parseUtcSeconds(text);
+        const text = ((await chartLocalTime(page).textContent()) ?? "").trim();
+        return parseLocalSeconds(text);
       }
     }
   }
   await expect(chart(page).getByText("Inspecting candle")).toBeVisible();
-  const text = ((await chartUTC(page).textContent()) ?? "").trim();
-  return parseUtcSeconds(text);
+  const text = ((await chartLocalTime(page).textContent()) ?? "").trim();
+  return parseLocalSeconds(text);
 }
 
 async function mainPlotBox(page: Page) {
@@ -306,20 +306,20 @@ test("pauses follow on manual pan and returns to the live edge with Go Live", as
   await gotoMarket(page);
   await selectInterval(page, "1s");
   await candleBodyStats(chartFrame(page));
-  const latestBeforePan = await currentUtcSeconds(page);
+  const latestBeforePan = await currentLocalSeconds(page);
 
   await dragMainPlot(page, 0.45, 0.8);
 
   await expect(chart(page).getByRole("button", { name: "Go Live" })).toBeVisible();
   const rightmostAfterPan = await hoverRightmostVisibleCandle(page);
-  expect(utcAgeSeconds(rightmostAfterPan, latestBeforePan)).toBeGreaterThanOrEqual(3);
+  expect(localAgeSeconds(rightmostAfterPan, latestBeforePan)).toBeGreaterThanOrEqual(3);
 
   await chart(page).getByRole("button", { name: "Go Live" }).click();
 
   await expect(chart(page).getByRole("button", { name: "Go Live" })).toBeHidden();
   await expectReadableBodiesAtLiveEdge(page);
-  const currentLatest = await currentUtcSeconds(page);
-  expect(utcAgeSeconds(rightmostAfterPan, currentLatest)).toBeGreaterThanOrEqual(3);
+  const currentLatest = await currentLocalSeconds(page);
+  expect(localAgeSeconds(rightmostAfterPan, currentLatest)).toBeGreaterThanOrEqual(3);
 });
 
 test("reattaches follow when the user pans back to the live edge", async ({ page }) => {
