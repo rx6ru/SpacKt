@@ -106,3 +106,159 @@ jobs:
       - name: Stop services
         if: always()
         run: docker compose down --remove-orphans
+
+  deploy-render:
+    name: Render deploy (${{ matrix.service.name }})
+    needs: [backend, frontend, containers]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.RENDER_API_SERVICE_ID != '' && vars.RENDER_WEB_SERVICE_ID != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - name: Backend
+            id: ${{ vars.RENDER_API_SERVICE_ID }}
+          - name: Frontend
+            id: ${{ vars.RENDER_WEB_SERVICE_ID }}
+    steps:
+      - name: Deploy exact commit
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ matrix.service.id }}
+          RENDER_SERVICE_NAME: ${{ matrix.service.name }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${RENDER_API_KEY:-}" ]; then
+            echo "RENDER_API_KEY secret is not set."
+            exit 1
+          fi
+
+          api_url="https://api.render.com/v1/services/${RENDER_SERVICE_ID}/deploys"
+          request_time="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          post_body_file="$(mktemp)"
+          list_body_file="$(mktemp)"
+          trap 'rm -f "$post_body_file" "$list_body_file"' EXIT
+
+          body="$(jq -n --arg commit "$GITHUB_SHA" '{commitId: $commit, clearCache: "do_not_clear"}')"
+          post_status="$(
+            curl --fail-with-body --show-error --silent \
+              --connect-timeout 10 \
+              --max-time 30 \
+              --request POST \
+              --url "$api_url" \
+              --output "$post_body_file" \
+              --write-out "%{http_code}" \
+              --header "Accept: application/json" \
+              --header "Authorization: Bearer ${RENDER_API_KEY}" \
+              --header "Content-Type: application/json" \
+              --data "$body"
+          )"
+          case "$post_status" in
+            201)
+              deploy_id="$(jq -r '.id // empty' "$post_body_file")"
+              if [ -z "$deploy_id" ]; then
+                echo "Render created a deploy but did not return an id for ${RENDER_SERVICE_NAME}."
+                exit 1
+              fi
+              ;;
+            202)
+              deploy_id=""
+              for attempt in $(seq 1 60); do
+                list_status="$(
+                  curl --fail-with-body --show-error --silent \
+                    --connect-timeout 10 \
+                    --max-time 30 \
+                    --request GET \
+                    --url "${api_url}?createdAfter=${request_time}&limit=20" \
+                    --output "$list_body_file" \
+                    --write-out "%{http_code}" \
+                    --header "Accept: application/json" \
+                    --header "Authorization: Bearer ${RENDER_API_KEY}"
+                )"
+                if [ "$list_status" != "200" ]; then
+                  echo "Render deploy list returned HTTP ${list_status}."
+                  exit 1
+                fi
+
+                deploy_id="$(
+                  jq -r --arg commit "$GITHUB_SHA" \
+                    '[.[] | .deploy | select(.commit.id == $commit)][0].id // empty' \
+                    "$list_body_file"
+                )"
+                listed_status="$(
+                  jq -r --arg commit "$GITHUB_SHA" \
+                    '[.[] | .deploy | select(.commit.id == $commit)][0].status // empty' \
+                    "$list_body_file"
+                )"
+                if [ -n "$deploy_id" ]; then
+                  case "$listed_status" in
+                    live)
+                      echo "Render deployed ${RENDER_SERVICE_NAME} at ${GITHUB_SHA}."
+                      exit 0
+                      ;;
+                    build_failed|update_failed|pre_deploy_failed|canceled|deactivated)
+                      echo "Render deploy ${deploy_id} ended with status ${listed_status}."
+                      exit 1
+                      ;;
+                  esac
+                  break
+                fi
+
+                echo "Render queued ${RENDER_SERVICE_NAME}; waiting for deploy id."
+                sleep 20
+              done
+
+              if [ -z "$deploy_id" ]; then
+                echo "Render did not expose a deploy id for ${RENDER_SERVICE_NAME} in time."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "Render deploy request returned HTTP ${post_status}."
+              exit 1
+              ;;
+          esac
+
+          deploy_url="${api_url}/${deploy_id}"
+          for attempt in $(seq 1 60); do
+            deploy="$(
+              curl --fail-with-body --show-error --silent \
+                --connect-timeout 10 \
+                --max-time 30 \
+                --request GET \
+                --url "$deploy_url" \
+                --header "Accept: application/json" \
+                --header "Authorization: Bearer ${RENDER_API_KEY}"
+            )"
+            status="$(jq -r '.status // empty' <<<"$deploy")"
+            commit_id="$(jq -r '.commit.id // empty' <<<"$deploy")"
+
+            case "$status" in
+              live)
+                if [ "$commit_id" != "$GITHUB_SHA" ]; then
+                  echo "Render deployed ${commit_id:-unknown}, but GitHub built ${GITHUB_SHA}."
+                  exit 1
+                fi
+                echo "Render deployed ${RENDER_SERVICE_NAME} at ${GITHUB_SHA}."
+                exit 0
+                ;;
+              build_failed|update_failed|pre_deploy_failed|canceled|deactivated)
+                echo "Render deploy ${deploy_id} ended with status ${status}."
+                exit 1
+                ;;
+              created|queued|build_in_progress|pre_deploy_in_progress|update_in_progress)
+                echo "Render deploy ${deploy_id} for ${RENDER_SERVICE_NAME} is ${status}."
+                ;;
+              *)
+                echo "Render deploy ${deploy_id} returned unknown status ${status:-empty}."
+                exit 1
+                ;;
+            esac
+
+            sleep 20
+          done
+
+          echo "Render deploy ${deploy_id} did not become live in time."
+          exit 1

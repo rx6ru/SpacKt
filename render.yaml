@@ -4,7 +4,7 @@ services:
     runtime: docker
     plan: free
     numInstances: 1
-    autoDeployTrigger: checksPass
+    autoDeployTrigger: "off"
     dockerContext: .
     dockerfilePath: ./backend/Dockerfile
     healthCheckPath: /readyz
@@ -17,7 +17,7 @@ services:
   - type: web
     name: spackt-web
     runtime: static
-    autoDeployTrigger: checksPass
+    autoDeployTrigger: "off"
     rootDir: web
     buildCommand: npm install --global npm@12.0.2 && npm ci && npm run build
     staticPublishPath: out

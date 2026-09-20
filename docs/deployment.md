@@ -33,14 +33,15 @@ docker compose down --remove-orphans
 | `spackt-api` | Web service | Docker | `/readyz` |
 | `spackt-web` | Static site | Static export | Render static hosting |
 
-The blueprint uses `autoDeployTrigger: checksPass`.
-This setting tells Render to deploy after linked checks pass.
-Verify the setting in the Render dashboard after blueprint creation.
+The blueprint uses `autoDeployTrigger: off`.
+This setting stops Render from deploying directly from Git pushes.
+GitHub Actions owns each production release after all checks pass.
 
 ## First Render Setup
 
-Create the blueprint from `render.yaml`.
+Create the blueprint from `render.yaml` after GitHub checks pass.
 Render creates service URLs during this step.
+Keep automatic deploys off for both services.
 
 Set backend environment values:
 
@@ -60,6 +61,32 @@ Do not include a path, query string, or trailing route.
 
 After you set `NEXT_PUBLIC_API_URL`, rebuild the frontend.
 The static export stores this value at build time.
+
+## GitHub Release Setup
+
+Add this GitHub Actions secret:
+
+| Name | Purpose |
+| --- | --- |
+| `RENDER_API_KEY` | Authorizes the Render deploy API call |
+
+Add these GitHub Actions repository variables:
+
+| Name | Purpose |
+| --- | --- |
+| `RENDER_API_SERVICE_ID` | Identifies the Render backend service |
+| `RENDER_WEB_SERVICE_ID` | Identifies the Render frontend service |
+
+The deploy job runs only on a push to `main`.
+It also requires both service ID variables.
+Fork pull requests do not have these variables, so they skip deployment.
+
+The job sends the exact Git commit SHA to Render.
+It waits until Render reports `live`.
+It fails if Render reports a failed, canceled, or different commit.
+
+Keep source connection credentials in Render or GitHub.
+Do not add them as runtime environment variables.
 
 ## Backend Deployment
 

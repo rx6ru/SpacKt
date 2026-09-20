@@ -3,6 +3,10 @@
 SpacKt, pronounced **Space Cat**, is a real-time BTC-USD market console.
 It runs one simulated market and adapts live delivery for each browser.
 
+[Open SpacKt](https://spackt-web.onrender.com) ·
+[Backend readiness](https://spackt-api.onrender.com/readyz) ·
+[Build checks](https://github.com/rx6ru/SpacKt/actions/workflows/ci.yml)
+
 The backend owns the complete market stream.
 The frontend renders the chart, order book, trades, connection state, and debug controls.
 No exchange account, database, or external market feed is required.
