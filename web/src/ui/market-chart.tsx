@@ -17,8 +17,10 @@ export function MarketChart({ snapshot, onSelectInterval }: MarketChartProps) {
   const adapterRef = useRef<Awaited<ReturnType<typeof loadAdapter>> | null>(null);
   const latestCandlesRef = useRef(candlesPayload(snapshot));
   const generationRef = useRef(0);
+  const lastBarSpacingRef = useRef<number | undefined>(undefined);
   const [retryVersion, setRetryVersion] = useState(0);
   const [chartError, setChartError] = useState(false);
+  const [followingLive, setFollowingLive] = useState(true);
   const [inspectedKey, setInspectedKey] = useState<{
     session: string | null;
     interval: Interval;
@@ -48,13 +50,21 @@ export function MarketChart({ snapshot, onSelectInterval }: MarketChartProps) {
     if (!container) return undefined;
 
     setChartError(false);
-    void loadAdapter(container, (candle) => {
-      if (generationRef.current !== generation) return;
-      setInspectedKey(candle ? {
-        session: snapshot.session,
-        interval: snapshot.selectedInterval,
-        timeMs: candle.timeMs,
-      } : null);
+    setFollowingLive(true);
+    void loadAdapter(container, {
+      initialBarSpacing: lastBarSpacingRef.current,
+      onInspect: (candle) => {
+        if (generationRef.current !== generation) return;
+        setInspectedKey(candle ? {
+          session: snapshot.session,
+          interval: snapshot.selectedInterval,
+          timeMs: candle.timeMs,
+        } : null);
+      },
+      onFollowingChange: (following) => {
+        if (generationRef.current !== generation) return;
+        setFollowingLive(following);
+      },
     }).then((adapter) => {
       if (disposed || generationRef.current !== generation) {
         adapter.dispose();
@@ -74,6 +84,9 @@ export function MarketChart({ snapshot, onSelectInterval }: MarketChartProps) {
       generationRef.current += 1;
       const adapter = adapterRef.current;
       adapterRef.current = null;
+      if (adapter) {
+        lastBarSpacingRef.current = adapter.getBarSpacing();
+      }
       adapter?.inspect(null);
       adapter?.dispose();
     };
@@ -100,6 +113,10 @@ export function MarketChart({ snapshot, onSelectInterval }: MarketChartProps) {
       setInspectedKey({ session: snapshot.session, interval: snapshot.selectedInterval, timeMs: next.timeMs });
     }
     adapterRef.current?.inspect(next?.timeMs ?? null);
+  }
+
+  function followLive() {
+    adapterRef.current?.followLive();
   }
 
   const chartState = chartError ? "Chart unavailable" : chartStateText(snapshot);
@@ -132,6 +149,13 @@ export function MarketChart({ snapshot, onSelectInterval }: MarketChartProps) {
         aria-label={`Candlestick chart summary. ${formatCandle(activeCandle, meta)}`}
       >
         <div ref={containerRef} className="chart-canvas" />
+        {!followingLive && !chartError ? (
+          <div className="chart-live-control">
+            <button type="button" className="compact-action" onClick={followLive}>
+              Go Live
+            </button>
+          </div>
+        ) : null}
         {chartState ? (
           <div className={chartError ? "chart-state chart-error" : "chart-state"}>
             <span>{chartState}</span>
@@ -176,10 +200,14 @@ function LegendCell({ label, value }: { label: string; value: string }) {
 
 async function loadAdapter(
   container: HTMLDivElement,
-  onInspect: (candle: Candle | null) => void,
+  options: {
+    onInspect: (candle: Candle | null) => void;
+    onFollowingChange: (following: boolean) => void;
+    initialBarSpacing?: number;
+  },
 ) {
   const { mountCandleChart } = await import("../chart/adapter");
-  return mountCandleChart(container, { onInspect });
+  return mountCandleChart(container, options);
 }
 
 function applyCandles(

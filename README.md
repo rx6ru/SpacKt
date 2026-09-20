@@ -54,6 +54,11 @@ Each candle key uses session, symbol, interval, and open time.
 The browser accepts the higher candle revision for the same key.
 A late interval response cannot replace the current view.
 
+The chart follows the latest candle while you watch the live edge.
+Scroll into history to pause follow, then select **Go Live** to return.
+Scrolling back to the live edge also resumes follow.
+Changing intervals keeps your chosen candle width.
+
 The order book starts from a REST snapshot.
 The browser buffers WebSocket ranges while the snapshot is in flight.
 It replays ranges in order after the snapshot arrives.

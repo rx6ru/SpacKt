@@ -420,3 +420,19 @@ The first scaling calculation is measured bytes per update × updates per second
 - [Docker Compose readiness](https://docs.docker.com/compose/how-tos/startup-order/), [Next CSP](https://nextjs.org/docs/app/guides/content-security-policy).
 
 Implementation must verify the exact chosen versions against these current upstream contracts.
+
+
+## Chart viewport behavior
+
+The chart starts with 12 CSS pixels between candle centers and a 3 bar right margin.
+These display defaults keep the newest candle visible and readable.
+The user can still zoom out with the library's native controls.
+`MarketChart` preserves the chosen pixel spacing when the interval changes.
+
+The adapter follows new candles while the live edge is visible.
+Panning into history pauses follow and shows Go Live.
+Panning back to the live edge resumes follow automatically.
+Go Live returns to the newest candle without changing zoom.
+Bulk replacements preserve the live offset when following.
+Historical views use a candle timestamp anchor because array indices can change after trimming or recovery.
+The adapter ignores transient range callbacks during data replacement and pending history loads.

@@ -225,7 +225,7 @@ test("switches chart intervals with pressed state", async ({ page }) => {
   );
 });
 
-test("fits delayed history after a live seed", async ({ page, request }) => {
+test("shows a readable delayed-history window after a live seed", async ({ page, request }) => {
   await gotoMarket(page);
 
   await expect(region(page, "Connection and delivery").getByText("Live")).toBeVisible({
@@ -287,7 +287,7 @@ test("fits delayed history after a live seed", async ({ page, request }) => {
     expect(history.candles.length).toBeGreaterThan(40);
     expect(typeof history.candles[0]?.t).toBe("number");
     const firstUTCs = new Set(history.candles.slice(0, 2).map((candle) => formatUTC(candle.t)));
-    const interiorUTCs = new Set(history.candles.slice(20, -20).map((candle) => formatUTC(candle.t)));
+    const historicalUTCs = new Set(history.candles.slice(2, -2).map((candle) => formatUTC(candle.t)));
     const latestUTC = formatUTC(history.candles[history.candles.length - 1]!.t);
     const frame = chart.locator(".chart-frame");
     const box = await frame.boundingBox();
@@ -299,7 +299,7 @@ test("fits delayed history after a live seed", async ({ page, request }) => {
 
     expect(firstUTCs.has(inspectedUTC)).toBe(false);
     expect(inspectedUTC).not.toBe(latestUTC);
-    expect(interiorUTCs.has(inspectedUTC)).toBe(true);
+    expect(historicalUTCs.has(inspectedUTC)).toBe(true);
   } finally {
     releaseHeldHistory();
     await page.unroute("**/api/candles?**").catch(() => undefined);
@@ -462,7 +462,7 @@ test("keeps the interior history viewport after same-session reconnect", async (
     expect(history.candles.length).toBeGreaterThan(40);
     expect(typeof history.candles[0]?.t).toBe("number");
     const firstUTCs = new Set(history.candles.slice(0, 2).map((candle) => formatUTC(candle.t)));
-    const interiorUTCs = new Set(history.candles.slice(20, -20).map((candle) => formatUTC(candle.t)));
+    const historicalUTCs = new Set(history.candles.slice(2, -2).map((candle) => formatUTC(candle.t)));
     const latestUTC = formatUTC(history.candles[history.candles.length - 1]!.t);
     const frame = chart.locator(".chart-frame");
     const box = await frame.boundingBox();
@@ -474,7 +474,7 @@ test("keeps the interior history viewport after same-session reconnect", async (
 
     expect(firstUTCs.has(inspectedUTC)).toBe(false);
     expect(inspectedUTC).not.toBe(latestUTC);
-    expect(interiorUTCs.has(inspectedUTC)).toBe(true);
+    expect(historicalUTCs.has(inspectedUTC)).toBe(true);
   } finally {
     await releaseBufferedCandles().catch(() => undefined);
     releaseHeldHistory();

@@ -280,6 +280,19 @@ button, input { color: inherit; }
   position: absolute;
   inset: 0;
 }
+.chart-live-control {
+  position: absolute;
+  z-index: 2;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+.chart-live-control .compact-action {
+  pointer-events: auto;
+  background: color-mix(in srgb, var(--surface-2) 92%, black);
+}
 .chart-state {
   position: absolute;
   inset: auto 12px 12px;

@@ -22,7 +22,7 @@ export function OrderBook({ snapshot }: { snapshot: MarketRuntimeSnapshot }) {
           <span>Side</span>
           <span>Price (USD)</span>
           <span>Size (BTC)</span>
-          <span>Depth</span>
+          <span>Liquidity</span>
         </div>
         <BookRows side="ASK" levels={[...asks].reverse()} maxQty={maxQty} meta={meta} />
         <div className="spread-row">

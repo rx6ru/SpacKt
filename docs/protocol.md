@@ -156,7 +156,8 @@ The server computes this value from the current connection's trade cursor.
 The browser counts each omitted ID once per backend session, including across reconnects.
 It uses a separate WebSocket trade cursor. REST arrival order does not change this count.
 Trade-list omissions do not change candle aggregation or book continuity.
-The browser retains at most100 displayed trades and reports skipped display records in diagnostics.
+The browser retains at most100 recent trades and renders the newest20.
+It reports omitted live trade records without treating them as packet loss.
 
 ```json
 {"type":"update","session":"s1","marketRev":84,

@@ -13,8 +13,25 @@ import {
 export type CandleChartAdapter = {
   setCandles(candles: readonly Candle[], options?: { reset?: boolean; historyReady?: boolean }): void;
   inspect(timeMs: number | null): void;
+  followLive(): void;
+  getBarSpacing(): number;
   dispose(): void;
 };
+
+type CandleChartMountOptions = {
+  onInspect: (candle: Candle | null) => void;
+  onFollowingChange?: (following: boolean) => void;
+  initialBarSpacing?: number;
+};
+
+type RecoveryAnchor = {
+  range: LogicalRange;
+  timeMs: number;
+  index: number;
+};
+
+const DEFAULT_BAR_SPACING = 12;
+const LIVE_RIGHT_OFFSET = 3;
 
 const CHART_OPTIONS = {
   autoSize: true,
@@ -35,6 +52,8 @@ const CHART_OPTIONS = {
     borderColor: "#2C3440",
     timeVisible: true,
     secondsVisible: true,
+    barSpacing: DEFAULT_BAR_SPACING,
+    rightOffset: LIVE_RIGHT_OFFSET,
   },
 };
 
@@ -89,17 +108,77 @@ function samePrefix(left: readonly Candle[], right: readonly Candle[], length: n
     && Array.from({ length }).every((_value, index) => sameCandle(left[index], right[index]));
 }
 
+function rangeWithSharedCandleAnchor(
+  range: LogicalRange,
+  previousCandles: readonly Candle[],
+  candles: readonly Candle[],
+): LogicalRange {
+  if (previousCandles.length === 0 || candles.length === 0) {
+    return range;
+  }
+
+  const previousIndex = Math.min(previousCandles.length - 1, Math.max(0, Math.floor(range.to)));
+  const anchor = previousCandles[previousIndex];
+  if (!anchor) {
+    return range;
+  }
+
+  const nextIndex = candles.findIndex((candle) => candle.timeMs === anchor.timeMs);
+  if (nextIndex < 0) {
+    return range;
+  }
+
+  const delta = nextIndex - previousIndex;
+  return {
+    from: (range.from + delta) as LogicalRange["from"],
+    to: (range.to + delta) as LogicalRange["to"],
+  };
+}
+
+function recoveryAnchorForRange(range: LogicalRange, candles: readonly Candle[]): RecoveryAnchor | null {
+  if (candles.length === 0) {
+    return null;
+  }
+  const index = Math.min(candles.length - 1, Math.max(0, Math.floor(range.to)));
+  const anchor = candles[index];
+  return anchor ? { range: { ...range }, timeMs: anchor.timeMs, index } : null;
+}
+
+function rangeFromRecoveryAnchor(anchor: RecoveryAnchor, candles: readonly Candle[]): LogicalRange {
+  const nextIndex = candles.findIndex((candle) => candle.timeMs === anchor.timeMs);
+  if (nextIndex < 0) {
+    return anchor.range;
+  }
+  const delta = nextIndex - anchor.index;
+  return {
+    from: (anchor.range.from + delta) as LogicalRange["from"],
+    to: (anchor.range.to + delta) as LogicalRange["to"],
+  };
+}
+
 export function mountCandleChart(
   container: HTMLElement,
-  options: { onInspect: (candle: Candle | null) => void },
+  options: CandleChartMountOptions,
 ): CandleChartAdapter {
-  const chart = createChart(container, CHART_OPTIONS as Parameters<typeof createChart>[1]);
+  const chartOptions = {
+    ...CHART_OPTIONS,
+    timeScale: {
+      ...CHART_OPTIONS.timeScale,
+      barSpacing: options.initialBarSpacing ?? DEFAULT_BAR_SPACING,
+    },
+  };
+  const chart = createChart(container, chartOptions as Parameters<typeof createChart>[1]);
   const series = chart.addSeries(CandlestickSeries, CANDLE_OPTIONS) as CandleSeries;
   const timeScale = chart.timeScale();
   let disposed = false;
-  let fittedInitialContent = false;
+  let anchoredInitialContent = false;
   let waitingForHistory = false;
-  let recoveryViewport: LogicalRange | null = null;
+  let recoveryAnchor: RecoveryAnchor | null = null;
+  let recoveryWasFollowing = true;
+  let recoveryLiveOffset = LIVE_RIGHT_OFFSET;
+  let following = true;
+  let mutatingData = false;
+  let lastVisibleRange: LogicalRange | null = null;
   let previousCandles: readonly Candle[] = [];
   let candleByTimeMs = new Map<number, Candle>();
   let candleByChartTime = new Map<number, Candle>();
@@ -109,11 +188,58 @@ export function mountCandleChart(
     candleByChartTime = new Map(candles.map((candle) => [candle.timeMs / 1_000, candle]));
   }
 
+  function setFollowing(nextFollowing: boolean): void {
+    if (following === nextFollowing) {
+      return;
+    }
+    following = nextFollowing;
+    options.onFollowingChange?.(following);
+  }
+
+  function getPositiveScrollPosition(): number | null {
+    const position = timeScale.scrollPosition();
+    return typeof position === "number" && Number.isFinite(position) && position >= 0 ? position : null;
+  }
+
+  function scrollToLive(position = LIVE_RIGHT_OFFSET): void {
+    timeScale.scrollToPosition(position, false);
+  }
+
+  function rangeShowsLatest(range: LogicalRange | null, candles: readonly Candle[]): boolean {
+    if (!range || candles.length === 0) {
+      return true;
+    }
+    const lastIndex = candles.length - 1;
+    return range.from <= lastIndex && range.to >= lastIndex;
+  }
+
+  function isHistoricalView(range: LogicalRange | null, candles: readonly Candle[]): boolean {
+    const position = timeScale.scrollPosition();
+    return (typeof position === "number" && Number.isFinite(position) && position < 0)
+      || !rangeShowsLatest(range, candles);
+  }
+
+  function runWithoutRangeCallbacks(action: () => void): void {
+    mutatingData = true;
+    try {
+      action();
+    } finally {
+      mutatingData = false;
+    }
+  }
+
   function replaceData(candles: readonly Candle[]): void {
-    const visibleRange = fittedInitialContent && !waitingForHistory ? timeScale.getVisibleLogicalRange() : null;
+    const visibleRange = !waitingForHistory ? timeScale.getVisibleLogicalRange() : null;
+    const liveOffset = getPositiveScrollPosition();
+    const keepFollowing = following && liveOffset !== null && !isHistoricalView(visibleRange, previousCandles);
+    if (following && !keepFollowing) {
+      setFollowing(false);
+    }
     series.setData(candles.map(toChartBar));
-    if (visibleRange) {
-      timeScale.setVisibleLogicalRange(visibleRange);
+    if (keepFollowing) {
+      scrollToLive(liveOffset ?? LIVE_RIGHT_OFFSET);
+    } else if (visibleRange) {
+      timeScale.setVisibleLogicalRange(rangeWithSharedCandleAnchor(visibleRange, previousCandles, candles));
     }
   }
 
@@ -121,27 +247,39 @@ export function mountCandleChart(
     if (!historyReady) return;
     if (waitingForHistory) {
       waitingForHistory = false;
-      const savedRange = recoveryViewport;
-      recoveryViewport = null;
-      if (savedRange && candles.length > 0) {
-        timeScale.setVisibleLogicalRange(savedRange);
+      const savedAnchor = recoveryAnchor;
+      recoveryAnchor = null;
+      if (!recoveryWasFollowing && savedAnchor && candles.length > 0) {
+        timeScale.setVisibleLogicalRange(rangeFromRecoveryAnchor(savedAnchor, candles));
         return;
       }
-      fittedInitialContent = false;
+      if (candles.length > 0) {
+        scrollToLive(recoveryWasFollowing ? recoveryLiveOffset : LIVE_RIGHT_OFFSET);
+        anchoredInitialContent = true;
+      }
+      return;
     }
-    if (!fittedInitialContent && candles.length > 0) {
-      timeScale.fitContent();
-      fittedInitialContent = true;
+    if (!anchoredInitialContent && candles.length > 0) {
+      scrollToLive();
+      anchoredInitialContent = true;
     }
   }
 
   function clearData(): void {
-    series.setData([]);
+    runWithoutRangeCallbacks(() => series.setData([]));
     previousCandles = [];
     replaceIndexes([]);
     options.onInspect(null);
     chart.clearCrosshairPosition();
   }
+
+  const handleVisibleRangeChange = (range: LogicalRange | null): void => {
+    if (disposed || mutatingData || waitingForHistory || !range || previousCandles.length === 0) {
+      return;
+    }
+    lastVisibleRange = range;
+    setFollowing(!isHistoricalView(range, previousCandles));
+  };
 
   const handleCrosshairMove = (param: MouseEventParams<Time>): void => {
     if (disposed) {
@@ -155,6 +293,7 @@ export function mountCandleChart(
   };
 
   chart.subscribeCrosshairMove(handleCrosshairMove);
+  timeScale.subscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
 
   return {
     setCandles(candles, { reset = false, historyReady = true } = {}): void {
@@ -163,8 +302,12 @@ export function mountCandleChart(
       }
       if (reset && !historyReady && !waitingForHistory) {
         waitingForHistory = true;
-        const visibleRange = fittedInitialContent ? timeScale.getVisibleLogicalRange() : null;
-        recoveryViewport = visibleRange ? { ...visibleRange } : null;
+        const visibleRange = previousCandles.length > 0 ? timeScale.getVisibleLogicalRange() : null;
+        recoveryWasFollowing = following && !isHistoricalView(visibleRange, previousCandles);
+        recoveryLiveOffset = recoveryWasFollowing ? getPositiveScrollPosition() ?? LIVE_RIGHT_OFFSET : LIVE_RIGHT_OFFSET;
+        recoveryAnchor = !recoveryWasFollowing && visibleRange
+          ? recoveryAnchorForRange(visibleRange, previousCandles)
+          : null;
       }
       if (sameHistory(previousCandles, candles)) {
         applyHistoryViewport(candles, historyReady);
@@ -180,7 +323,7 @@ export function mountCandleChart(
       }
 
       if (reset || previousCandles.length === 0) {
-        replaceData(candles);
+        runWithoutRangeCallbacks(() => series.setData(candles.map(toChartBar)));
         previousCandles = candles;
         replaceIndexes(candles);
         applyHistoryViewport(candles, historyReady);
@@ -194,21 +337,30 @@ export function mountCandleChart(
       }
 
       if (candles.length === previousCandles.length + 1 && samePrefix(candles, previousCandles, previousCandles.length)) {
+        const liveOffset = getPositiveScrollPosition();
+        const visibleRange = lastVisibleRange ?? timeScale.getVisibleLogicalRange();
+        const keepFollowing = following && liveOffset !== null && !isHistoricalView(visibleRange, previousCandles);
+        if (following && !keepFollowing) {
+          setFollowing(false);
+        }
         series.update(toChartBar(nextLast));
+        if (keepFollowing) {
+          scrollToLive(liveOffset);
+        }
       } else if (candles.length === previousCandles.length && nextLast.timeMs === previousLast.timeMs) {
         const changedIndexes = candles
           .map((candle, index) => sameCandle(candle, previousCandles[index]) ? -1 : index)
           .filter((index) => index >= 0);
         const [changedIndex] = changedIndexes;
         if (changedIndexes.length !== 1 || changedIndex === undefined) {
-          replaceData(candles);
+          runWithoutRangeCallbacks(() => replaceData(candles));
         } else if (changedIndex === candles.length - 1) {
           series.update(toChartBar(nextLast));
         } else {
           series.update(toChartBar(candles[changedIndex]), true);
         }
       } else {
-        replaceData(candles);
+        runWithoutRangeCallbacks(() => replaceData(candles));
       }
 
       previousCandles = candles;
@@ -232,12 +384,24 @@ export function mountCandleChart(
         chart.clearCrosshairPosition();
       }
     },
+    followLive(): void {
+      if (disposed) {
+        return;
+      }
+      scrollToLive();
+      setFollowing(true);
+    },
+    getBarSpacing(): number {
+      const spacing = timeScale.options().barSpacing;
+      return typeof spacing === "number" && Number.isFinite(spacing) ? spacing : DEFAULT_BAR_SPACING;
+    },
     dispose(): void {
       if (disposed) {
         return;
       }
       disposed = true;
       chart.unsubscribeCrosshairMove(handleCrosshairMove);
+      timeScale.unsubscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
       chart.remove();
     },
   };
