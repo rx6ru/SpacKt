@@ -11,34 +11,54 @@ const chartPort = vi.hoisted(() => {
   type Adapter = {
     setCandles: ReturnType<typeof vi.fn>;
     inspect: ReturnType<typeof vi.fn>;
+    followLive: ReturnType<typeof vi.fn>;
+    getBarSpacing: ReturnType<typeof vi.fn>;
     dispose: ReturnType<typeof vi.fn>;
+  };
+
+  type MountOptions = {
+    onInspect: (candle: Candle | null) => void;
+    onFollowingChange?: (following: boolean) => void;
+    initialBarSpacing?: number;
   };
 
   return {
     adapter: undefined as Adapter | undefined,
+    adapters: [] as Adapter[],
     onInspect: undefined as ((candle: Candle | null) => void) | undefined,
-    mountCandleChart: vi.fn((container: HTMLElement, options: { onInspect: (candle: Candle | null) => void }) => {
+    onFollowingChange: undefined as ((following: boolean) => void) | undefined,
+    mountCandleChart: vi.fn((container: HTMLElement, options: MountOptions) => {
       void container;
       chartPort.onInspect = options.onInspect;
+      chartPort.onFollowingChange = options.onFollowingChange;
       chartPort.adapter = {
         setCandles: vi.fn(),
         inspect: vi.fn(),
+        followLive: vi.fn(),
+        getBarSpacing: vi.fn(() => 12),
         dispose: vi.fn(),
       };
+      chartPort.adapters.push(chartPort.adapter);
       return chartPort.adapter;
     }),
     reset() {
       this.adapter = undefined;
+      this.adapters = [];
       this.onInspect = undefined;
+      this.onFollowingChange = undefined;
       this.mountCandleChart.mockClear();
-      this.mountCandleChart.mockImplementation((container: HTMLElement, options: { onInspect: (candle: Candle | null) => void }) => {
+      this.mountCandleChart.mockImplementation((container: HTMLElement, options: MountOptions) => {
         void container;
         chartPort.onInspect = options.onInspect;
+        chartPort.onFollowingChange = options.onFollowingChange;
         chartPort.adapter = {
           setCandles: vi.fn(),
           inspect: vi.fn(),
+          followLive: vi.fn(),
+          getBarSpacing: vi.fn(() => 12),
           dispose: vi.fn(),
         };
+        chartPort.adapters.push(chartPort.adapter);
         return chartPort.adapter;
       });
     },
@@ -251,6 +271,66 @@ describe("MarketChart", () => {
         historyReady: true,
       }),
     ));
+  });
+
+  it("shows Go Live after manual history pan and resumes live follow on click", async () => {
+    render(<MarketChart snapshot={snapshot()} onSelectInterval={vi.fn()} />);
+    await waitForChartMount();
+
+    act(() => {
+      chartPort.onFollowingChange?.(false);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Go Live" }));
+
+    expect(chartPort.adapter?.followLive).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains the chosen candle spacing when an interval remounts the chart", async () => {
+    const { rerender } = render(<MarketChart snapshot={snapshot({ selectedInterval: "1m" })} onSelectInterval={vi.fn()} />);
+    await waitForChartMount();
+    chartPort.adapter?.getBarSpacing.mockReturnValue(18);
+
+    rerender(<MarketChart snapshot={snapshot({
+      selectedInterval: "5m",
+      candles: {
+        ...createInitialSnapshot("5m").candles,
+        status: "ready",
+        historyStatus: "ready",
+        interval: "5m",
+        requestId: 2,
+        candles: [candle(300_000, 10_300)],
+      },
+    })} onSelectInterval={vi.fn()} />);
+
+    await waitFor(() => expect(chartPort.mountCandleChart).toHaveBeenCalledTimes(2));
+    expect(chartPort.mountCandleChart.mock.calls[1][1]).toEqual(expect.objectContaining({
+      initialBarSpacing: 18,
+    }));
+  });
+
+  it("ignores stale follow callbacks from an old chart generation", async () => {
+    const { rerender } = render(<MarketChart snapshot={snapshot({ selectedInterval: "1m" })} onSelectInterval={vi.fn()} />);
+    await waitForChartMount();
+    const firstFollowingChange = chartPort.onFollowingChange;
+
+    rerender(<MarketChart snapshot={snapshot({
+      selectedInterval: "5m",
+      candles: {
+        ...createInitialSnapshot("5m").candles,
+        status: "ready",
+        historyStatus: "ready",
+        interval: "5m",
+        requestId: 2,
+        candles: [candle(300_000, 10_300)],
+      },
+    })} onSelectInterval={vi.fn()} />);
+    await waitFor(() => expect(chartPort.mountCandleChart).toHaveBeenCalledTimes(2));
+
+    act(() => {
+      firstFollowingChange?.(false);
+    });
+
+    expect(screen.queryByRole("button", { name: "Go Live" })).toBeNull();
   });
 
   it("disables inspection controls when there are no candles", () => {
