@@ -16,6 +16,7 @@ type Config struct {
 type Event struct {
 	Rev         uint64
 	TimeMS      int64
+	Trades      []model.Trade
 	Trade       *model.Trade
 	BookChanges []book.LevelUpdate
 	Book        model.BookSnapshot
