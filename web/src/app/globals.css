@@ -86,27 +86,11 @@ button, input { color: inherit; }
 
 .brand-lockup { gap: 10px; min-width: 0; }
 .spacecat-mark {
-  position: relative;
   flex: 0 0 32px;
   width: 32px;
   height: 32px;
   border-radius: 8px;
-  background: var(--accent);
-}
-.spacecat-mark::before,
-.spacecat-mark::after {
-  content: "";
-  position: absolute;
-  inset: 7px 6px;
-}
-.spacecat-mark::before {
-  background: var(--text);
-  clip-path: polygon(0 0, 35% 20%, 65% 20%, 100% 0, 94% 72%, 75% 100%, 25% 100%, 6% 72%);
-}
-.spacecat-mark::after {
-  background:
-    radial-gradient(circle at 30% 55%, var(--ink) 0 1.5px, transparent 2px),
-    radial-gradient(circle at 70% 55%, var(--ink) 0 1.5px, transparent 2px);
+  background: url("/icon.svg") center / contain no-repeat;
 }
 .brand-word { font-size: 16px; font-weight: 760; letter-spacing: -0.3px; }
 .summary-primary { gap: 12px; min-width: 0; flex-wrap: wrap; }

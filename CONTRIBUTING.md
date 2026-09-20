@@ -13,7 +13,7 @@ Keep changes focused on the software, its tests, and its operating instructions.
 | `.github/workflows/` | Continuous integration |
 | `.githooks/pre-commit` | Local repository-content checks |
 
-Allowed root files are `README.md`, `CONTRIBUTING.md`, `LICENSE`, `NOTICE`, `.gitignore`, `.dockerignore`, `compose.yaml`, `render.yaml`, and `Makefile`.
+Allowed root files are `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `LICENSE`, `NOTICE`, `.gitignore`, `.dockerignore`, `compose.yaml`, `render.yaml`, and `Makefile`.
 New root locations require an explicit policy change and review.
 
 Install frontend packages inside `web/` with npm.
@@ -23,7 +23,8 @@ Use Go modules for the backend.
 
 Do not commit dependencies, build output, caches, coverage output, browser reports, runtime logs, or actual environment files.
 Use `.env.example` inside the relevant application directory for public defaults and placeholders.
-Do not commit symlinks or local development-tool instructions.
+`AGENTS.md` is the only allowed root agent guide. It must stay product-facing and pass the same documentation content checks.
+Do not commit symlinks or local development-tool instructions elsewhere.
 
 ## Documentation
 

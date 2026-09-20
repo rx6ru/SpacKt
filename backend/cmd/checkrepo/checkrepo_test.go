@@ -9,6 +9,43 @@ import (
 	"testing"
 )
 
+func TestEvaluateAllowsStandardRootAgentGuide(t *testing.T) {
+	entry := Entry{Path: "AGENTS.md", Mode: "file", Data: []byte("# Agent guide\n\nRead README.md and docs/architecture.md before changing the software.\n")}
+	if findings := Evaluate([]Entry{entry}); len(findings) != 0 {
+		t.Fatalf("standard root guide rejected: %#v", findings)
+	}
+}
+
+func TestRootAgentGuideDoesNotBypassContentRules(t *testing.T) {
+	for _, test := range []struct{ name, content, reason string }{
+		{"plan", "# Implementation Plan\nPrivate task tracking.\n", "private planning"},
+		{"workstation path", "Read /home/example/private-notes.md.\n", "private workspace"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			entry := Entry{Path: "AGENTS.md", Mode: "file", Data: []byte(test.content)}
+			assertFinding(t, Evaluate([]Entry{entry}), entry.Path, test.reason)
+		})
+	}
+}
+
+func TestRootAgentGuideExceptionIsExactAndFileOnly(t *testing.T) {
+	for _, entry := range []Entry{
+		{Path: "agents.md", Mode: "file"},
+		{Path: "web/AGENTS.md", Mode: "file"},
+		{Path: "docs/AGENTS.md", Mode: "file"},
+		{Path: "AGENTS.md/notes.md", Mode: "file"},
+		{Path: "AGENTS.md", Mode: "dir"},
+		{Path: "AGENTS.md", Mode: "symlink"},
+		{Path: "CLAUDE.md", Mode: "file"},
+	} {
+		t.Run(entry.Path+"/"+entry.Mode, func(t *testing.T) {
+			if len(Evaluate([]Entry{entry})) == 0 {
+				t.Fatalf("guide exception accepted unintended entry: %+v", entry)
+			}
+		})
+	}
+}
+
 func TestEvaluateAllowsLegitimateReadmeWithAIAndFencedExamples(t *testing.T) {
 	entries := []Entry{{
 		Path: "README.md",

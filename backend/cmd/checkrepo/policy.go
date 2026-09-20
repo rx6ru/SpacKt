@@ -17,7 +17,7 @@ type Finding struct {
 	Reason string
 }
 
-var rootFiles = map[string]bool{"README.md": true, "CONTRIBUTING.md": true, "LICENSE": true, "NOTICE": true, ".gitignore": true, ".dockerignore": true, "compose.yaml": true, "render.yaml": true, "Makefile": true}
+var rootFiles = map[string]bool{"README.md": true, "AGENTS.md": true, "CONTRIBUTING.md": true, "LICENSE": true, "NOTICE": true, ".gitignore": true, ".dockerignore": true, "compose.yaml": true, "render.yaml": true, "Makefile": true}
 var nodeFiles = map[string]bool{"package.json": true, "package-lock.json": true, "npm-shrinkwrap.json": true, "pnpm-lock.yaml": true, "pnpm-workspace.yaml": true, "yarn.lock": true, "bun.lock": true, "bun.lockb": true}
 var generatedNames = map[string]bool{"node_modules": true, ".pnpm-store": true, ".next": true, "out": true, "coverage": true, "playwright-report": true, "test-results": true, ".gocache": true, ".cache": true}
 var privateNames = map[string]bool{"agents.md": true, "claude.md": true, ".omx": true, ".codex": true, ".claude": true, ".agents": true, "dev_n_aidocs": true, "kb": true, "assignment_details": true, "user_given": true, ".worktrees": true}
@@ -68,6 +68,12 @@ func pathReason(entry Entry) string {
 	}
 	if len(parts) == 1 && generatedNames[lower] {
 		return "remove generated root artifacts; frontend dependencies belong in web"
+	}
+	if p == "AGENTS.md" {
+		if entry.Mode == "file" {
+			return ""
+		}
+		return "root AGENTS.md must be a regular file"
 	}
 	for _, part := range parts {
 		name := strings.ToLower(part)
