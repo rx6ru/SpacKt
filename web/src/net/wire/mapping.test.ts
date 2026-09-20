@@ -56,6 +56,30 @@ const candleDomain = {
 };
 
 describe("wire domain mapping", () => {
+  it("accepts and preserves every equal-time execution in an ordered trade batch", () => {
+    const mapped = mapServerEvent(decode("server", {
+      type: "update",
+      session: "s1",
+      marketRev: 84,
+      trades: [
+        { id: 41, t: 1700000000800, p: "101.00", q: "0.2000", side: "buy" },
+        { id: 42, t: 1700000000800, p: "101.00", q: "0.2000", side: "buy" },
+        { id: 43, t: 1700000000800, p: "102.00", q: "0.2000", side: "buy" },
+      ],
+      skipped: 0,
+    }), 321);
+
+    expect(mapped).toMatchObject({
+      type: "update",
+      trades: [
+        { id: 41, timeMs: 1700000000800, priceTicks: 10100, quantityLots: 2000, side: "buy" },
+        { id: 42, timeMs: 1700000000800, priceTicks: 10100, quantityLots: 2000, side: "buy" },
+        { id: 43, timeMs: 1700000000800, priceTicks: 10200, quantityLots: 2000, side: "buy" },
+      ],
+      skipped: 0,
+    });
+  });
+
   it("maps metadata policy and retention without dropping public fields", () => {
     const mapped = mapMeta(decodeFixture("meta", "valid-meta.json"));
 

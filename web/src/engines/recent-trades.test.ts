@@ -10,6 +10,23 @@ const trade = (id: number, priceTicks: number) => ({
 });
 
 describe("RecentTrades", () => {
+  it("keeps separate executions at the same time and uses the final execution price", () => {
+    const trades = new RecentTrades();
+    const timeMs = 1700000000800;
+    const first = { ...trade(41, 10100), timeMs, quantityLots: 2000 };
+    const second = { ...trade(42, 10100), timeMs, quantityLots: 2000 };
+    const third = { ...trade(43, 10200), timeMs, quantityLots: 2000 };
+
+    trades.merge("s1", [first, second, third]);
+
+    expect(trades.getState()).toEqual({
+      session: "s1",
+      trades: [third, second, first],
+      latestPriceTicks: 10200,
+      latestTradeId: 43,
+    });
+  });
+
   it("keeps newer live trades when a late REST response has older IDs", () => {
     const trades = new RecentTrades();
 
