@@ -108,6 +108,12 @@ function mounted(onInspect = vi.fn(), onFollowingChange = vi.fn(), initialBarSpa
   return mountCandleChart(container, { onInspect, onFollowingChange, initialBarSpacing });
 }
 
+function createdChartOptions(): { timeScale?: { minBarSpacing?: number } } {
+  const call = chartPort.createChart.mock.calls[0] as unknown as [HTMLElement, { timeScale?: { minBarSpacing?: number } }?] | undefined;
+  expect(call).toBeDefined();
+  return call?.[1] ?? {};
+}
+
 const resetReady = { reset: true } as const;
 
 function crosshair(timeSeconds: number, data: unknown = {}): void {
@@ -149,7 +155,7 @@ describe("mountCandleChart", () => {
         }),
       }),
     );
-    expect(chartPort.createChart.mock.calls[0][1].timeScale.minBarSpacing).toBeUndefined();
+    expect(createdChartOptions().timeScale?.minBarSpacing).toBeUndefined();
     expect(chartPort.timeScale.fitContent).not.toHaveBeenCalled();
     expect(chartPort.timeScale.scrollToPosition).toHaveBeenLastCalledWith(3, false);
   });
@@ -183,15 +189,24 @@ describe("mountCandleChart", () => {
 
   it("keeps the live right offset after a bulk replacement while following", () => {
     const adapter = mounted();
+    const visibleRange = { from: 80, to: 120.5 };
     chartPort.timeScale.scrollPosition.mockReturnValue(1.5);
-    adapter.setCandles([candle(1_000), candle(2_000), candle(3_000)], resetReady);
+    const initial = Array.from({ length: 120 }, (_value, index) => candle((index + 1) * 1_000, 1, 10_000 + index));
+    const replacement = [
+      ...Array.from({ length: 120 }, (_value, index) => candle((index + 1) * 1_000, 2, 10_500 + index)),
+      candle(121_000, 1, 10_900),
+    ];
+    adapter.setCandles(initial, resetReady);
+    chartPort.timeScale.getVisibleLogicalRange.mockReturnValue(visibleRange);
     chartPort.series.setData.mockClear();
+    chartPort.timeScale.setVisibleLogicalRange.mockClear();
     chartPort.timeScale.scrollToPosition.mockClear();
 
-    adapter.setCandles([candle(1_000, 2), candle(2_000, 2), candle(3_000, 2)]);
+    adapter.setCandles(replacement);
 
     expect(chartPort.series.setData).toHaveBeenCalled();
     expect(chartPort.timeScale.scrollToPosition).toHaveBeenLastCalledWith(1.5, false);
+    expect(chartPort.timeScale.setVisibleLogicalRange).not.toHaveBeenCalledWith(visibleRange);
   });
 
   it("does not pause follow mode for its own live-edge scroll updates", () => {
@@ -207,14 +222,28 @@ describe("mountCandleChart", () => {
     expect(chartPort.timeScale.scrollToPosition).toHaveBeenLastCalledWith(3, false);
   });
 
-  it("pauses follow mode when the user pans into history", () => {
+  it("does not pause follow mode when positive right margin still leaves the latest candle visible", () => {
     const onFollowingChange = vi.fn();
     const adapter = mounted(vi.fn(), onFollowingChange);
-    chartPort.timeScale.scrollPosition.mockReturnValue(12);
+    chartPort.timeScale.scrollPosition.mockReturnValue(5);
     adapter.setCandles([candle(1_000), candle(2_000), candle(3_000)], resetReady);
     chartPort.timeScale.scrollToPosition.mockClear();
 
-    chartPort.activeRangeHandler?.({ from: 0, to: 1 });
+    chartPort.activeRangeHandler?.({ from: 0, to: 3.5 });
+    adapter.setCandles([candle(1_000), candle(2_000), candle(3_000), candle(4_000)]);
+
+    expect(onFollowingChange).not.toHaveBeenCalledWith(false);
+    expect(chartPort.timeScale.scrollToPosition).toHaveBeenLastCalledWith(5, false);
+  });
+
+  it("pauses follow mode when the user pans into history", () => {
+    const onFollowingChange = vi.fn();
+    const adapter = mounted(vi.fn(), onFollowingChange);
+    chartPort.timeScale.scrollPosition.mockReturnValue(-60);
+    adapter.setCandles([candle(1_000), candle(2_000), candle(3_000)], resetReady);
+    chartPort.timeScale.scrollToPosition.mockClear();
+
+    chartPort.activeRangeHandler?.({ from: -60, to: -1 });
     adapter.setCandles([candle(1_000), candle(2_000), candle(3_000), candle(4_000)]);
 
     expect(onFollowingChange).toHaveBeenCalledWith(false);
@@ -225,9 +254,9 @@ describe("mountCandleChart", () => {
     const onFollowingChange = vi.fn();
     const adapter = mounted(vi.fn(), onFollowingChange);
     chartPort.timeScale.options.mockReturnValue({ barSpacing: 18 });
-    chartPort.timeScale.scrollPosition.mockReturnValue(12);
+    chartPort.timeScale.scrollPosition.mockReturnValue(-1);
     adapter.setCandles([candle(1_000), candle(2_000), candle(3_000)], resetReady);
-    chartPort.activeRangeHandler?.({ from: 0, to: 1 });
+    chartPort.activeRangeHandler?.({ from: -2, to: -1 });
     chartPort.timeScale.scrollToPosition.mockClear();
     onFollowingChange.mockClear();
 
@@ -417,6 +446,8 @@ describe("mountCandleChart", () => {
       rangePhase === "before-clear" ? userRange : seedRange,
     );
     adapter.setCandles(firstHistory, resetReady);
+    chartPort.timeScale.scrollPosition.mockReturnValue(-1);
+    chartPort.activeRangeHandler?.({ from: 80, to: 119 });
     adapter.setCandles([], { reset: true, historyReady: false });
     rangePhase = "seed";
     adapter.setCandles([seed], { reset: true, historyReady: false });
@@ -447,6 +478,8 @@ describe("mountCandleChart", () => {
       rangePhase === "before-clear" ? userRange : seedRange,
     );
     adapter.setCandles(firstHistory, resetReady);
+    chartPort.timeScale.scrollPosition.mockReturnValue(-1);
+    chartPort.activeRangeHandler?.({ from: 80, to: 119 });
     adapter.setCandles([], { reset: true, historyReady: false });
     rangePhase = "seed";
     adapter.setCandles([seed], { reset: true, historyReady: false });
@@ -458,6 +491,27 @@ describe("mountCandleChart", () => {
 
     expect(chartPort.timeScale.fitContent).not.toHaveBeenCalled();
     expect(chartPort.timeScale.setVisibleLogicalRange).toHaveBeenLastCalledWith(userRange);
+  });
+
+  it("reconnects at the latest candle with the current zoom while follow mode is active", () => {
+    const adapter = mounted();
+    const firstHistory = Array.from({ length: 120 }, (_value, index) => candle((index + 1) * 1_000, 1, 10_000 + index));
+    const seed = candle(120_000, 2, 10_700);
+    const recoveredHistory = firstHistory.map((item, index) => index === firstHistory.length - 1 ? seed : item);
+    chartPort.timeScale.options.mockReturnValue({ barSpacing: 18 });
+    chartPort.timeScale.scrollPosition.mockReturnValue(1.5);
+    chartPort.timeScale.getVisibleLogicalRange.mockReturnValue({ from: 80, to: 120.5 });
+    adapter.setCandles(firstHistory, resetReady);
+    adapter.setCandles([], { reset: true, historyReady: false });
+    adapter.setCandles([seed], { reset: true, historyReady: false });
+    chartPort.timeScale.setVisibleLogicalRange.mockClear();
+    chartPort.timeScale.scrollToPosition.mockClear();
+
+    adapter.setCandles(recoveredHistory, { reset: false, historyReady: true });
+
+    expect(adapter.getBarSpacing()).toBe(18);
+    expect(chartPort.timeScale.setVisibleLogicalRange).not.toHaveBeenCalledWith({ from: 80, to: 120.5 });
+    expect(chartPort.timeScale.scrollToPosition).toHaveBeenLastCalledWith(1.5, false);
   });
 
   it("anchors recovered history at the live edge when no pre-clear user range exists", () => {
