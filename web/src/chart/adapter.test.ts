@@ -250,6 +250,33 @@ describe("mountCandleChart", () => {
     expect(chartPort.timeScale.scrollToPosition).not.toHaveBeenCalled();
   });
 
+  it("resumes follow mode when the user pans back to the live edge", () => {
+    const onFollowingChange = vi.fn();
+    const adapter = mounted(vi.fn(), onFollowingChange);
+    const history = Array.from({ length: 120 }, (_value, index) => candle((index + 1) * 1_000, 1, 10_000 + index));
+    const bulkUpdate = [
+      ...history.slice(1, -1),
+      candle(120_000, 2, 10_900, { closed: true }),
+      candle(121_000, 1, 10_950),
+    ];
+    chartPort.timeScale.scrollPosition.mockReturnValue(-60);
+    adapter.setCandles(history, resetReady);
+    chartPort.activeRangeHandler?.({ from: 20, to: 59 });
+    expect(onFollowingChange).toHaveBeenLastCalledWith(false);
+
+    chartPort.timeScale.scrollPosition.mockReturnValue(3);
+    chartPort.activeRangeHandler?.({ from: 80, to: 122 });
+    chartPort.timeScale.getVisibleLogicalRange.mockReturnValue({ from: 80, to: 122 });
+    chartPort.timeScale.scrollToPosition.mockClear();
+    chartPort.timeScale.setVisibleLogicalRange.mockClear();
+
+    adapter.setCandles(bulkUpdate);
+
+    expect(onFollowingChange).toHaveBeenLastCalledWith(true);
+    expect(chartPort.timeScale.scrollToPosition).toHaveBeenLastCalledWith(3, false);
+    expect(chartPort.timeScale.setVisibleLogicalRange).not.toHaveBeenCalledWith({ from: 80, to: 122 });
+  });
+
   it("resumes follow mode at the live edge without changing the chosen zoom", () => {
     const onFollowingChange = vi.fn();
     const adapter = mounted(vi.fn(), onFollowingChange);
