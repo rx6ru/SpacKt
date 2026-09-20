@@ -1,5 +1,5 @@
 import type { MarketRuntimeSnapshot } from "../domain/market-view";
-import { formatLots, formatPriceTicks, formatUTC } from "./format";
+import { formatLocalTime, formatLots, formatPriceTicks } from "./format";
 
 export function RecentTrades({ snapshot }: { snapshot: MarketRuntimeSnapshot }) {
   const meta = snapshot.meta.value;
@@ -15,7 +15,7 @@ export function RecentTrades({ snapshot }: { snapshot: MarketRuntimeSnapshot }) 
       </div>
       <div className="trade-table" role="table" aria-label="Recent trades table">
         <div className="trade-row table-head" role="row">
-          <span role="columnheader">Time</span>
+          <span role="columnheader">Time (local)</span>
           <span role="columnheader">Price</span>
           <span role="columnheader">Size</span>
           <span role="columnheader">Side</span>
@@ -33,7 +33,7 @@ export function RecentTrades({ snapshot }: { snapshot: MarketRuntimeSnapshot }) 
           </div>
         ) : trades.map((trade) => (
           <div className="trade-row" role="row" key={trade.id}>
-            <span role="cell" className="numeric">{formatUTC(trade.timeMs)}</span>
+            <span role="cell" className="numeric">{formatLocalTime(trade.timeMs)}</span>
             <span role="cell" className="numeric">{formatPriceTicks(trade.priceTicks, meta)}</span>
             <span role="cell" className="numeric">{formatLots(trade.quantityLots, meta)}</span>
             <span role="cell" className={trade.side === "buy" ? "buy-text" : "sell-text"}>

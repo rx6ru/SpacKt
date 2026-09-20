@@ -1,7 +1,16 @@
 import type { Candle } from "../domain/model";
 import {
+  formatLocalDateTimeWithZone,
+  formatLocalDay,
+  formatLocalMinute,
+  formatLocalMonth,
+  formatLocalTime,
+  formatLocalYear,
+} from "./display-time";
+import {
   CandlestickSeries,
   createChart,
+  TickMarkType,
   type CandlestickData,
   type ISeriesApi,
   type LogicalRange,
@@ -52,8 +61,12 @@ const CHART_OPTIONS = {
     borderColor: "#2C3440",
     timeVisible: true,
     secondsVisible: true,
+    tickMarkFormatter: formatChartTick,
     barSpacing: DEFAULT_BAR_SPACING,
     rightOffset: LIVE_RIGHT_OFFSET,
+  },
+  localization: {
+    timeFormatter: formatChartTime,
   },
 };
 
@@ -69,6 +82,39 @@ const CANDLE_OPTIONS = {
 
 type ChartBar = CandlestickData<UTCTimestamp>;
 type CandleSeries = ISeriesApi<"Candlestick", Time>;
+
+function chartTimeToMs(time: Time): number | null {
+  if (typeof time === "number") {
+    return time * 1_000;
+  }
+  if (typeof time === "string") {
+    const parsed = Date.parse(time);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return Date.UTC(time.year, time.month - 1, time.day);
+}
+
+function formatChartTime(time: Time): string {
+  return formatLocalDateTimeWithZone(chartTimeToMs(time));
+}
+
+function formatChartTick(time: Time, tickMarkType: TickMarkType): string {
+  const timeMs = chartTimeToMs(time);
+  switch (tickMarkType) {
+    case TickMarkType.Year:
+      return formatLocalYear(timeMs);
+    case TickMarkType.Month:
+      return formatLocalMonth(timeMs);
+    case TickMarkType.DayOfMonth:
+      return formatLocalDay(timeMs);
+    case TickMarkType.Time:
+      return formatLocalMinute(timeMs);
+    case TickMarkType.TimeWithSeconds:
+      return formatLocalTime(timeMs);
+    default:
+      return formatLocalTime(timeMs);
+  }
+}
 
 function toChartTime(timeMs: number): UTCTimestamp {
   return (timeMs / 1_000) as UTCTimestamp;

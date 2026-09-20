@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Candle } from "../domain/model";
 import { mountCandleChart } from "./adapter";
 
@@ -95,10 +95,14 @@ const chartPort = vi.hoisted(() => {
   };
 });
 
-vi.mock("lightweight-charts", () => ({
-  CandlestickSeries: chartPort.CandlestickSeries,
-  createChart: chartPort.createChart,
-}));
+vi.mock("lightweight-charts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("lightweight-charts")>();
+  return {
+    ...actual,
+    CandlestickSeries: chartPort.CandlestickSeries,
+    createChart: chartPort.createChart,
+  };
+});
 
 const container = {} as HTMLElement;
 

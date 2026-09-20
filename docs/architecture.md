@@ -436,3 +436,15 @@ Go Live returns to the newest candle without changing zoom.
 Bulk replacements preserve the live offset when following.
 Historical views use a candle timestamp anchor because array indices can change after trimming or recovery.
 The adapter ignores transient range callbacks during data replacement and pending history loads.
+
+## Display time
+
+The browser uses `Intl.DateTimeFormat` to format market events in its local time zone.
+The formatter uses the event date, so daylight-saving changes follow the browser's time-zone rules.
+Trade rows, last-trade text, candle details, chart ticks, and crosshair labels share this display rule.
+Detailed labels include the zone. Compact labels use a 24-hour clock.
+
+Wire timestamps remain UTC epoch milliseconds. Chart series use the same instants in seconds.
+Display formatting does not shift timestamps, change candle keys, or change candle aggregation.
+The pure time formatter has no chart-library runtime dependency.
+The chart adapter loads the renderer separately when the chart mounts.

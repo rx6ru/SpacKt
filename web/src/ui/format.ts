@@ -1,5 +1,6 @@
 import type { Candle, Level, Trade } from "../domain/model";
 import type { Meta } from "../domain/market-view";
+import { formatLocalTime, formatLocalTimeWithZone } from "../chart/display-time";
 
 const fallbackPriceDecimals = 2;
 const fallbackLotDecimals = 4;
@@ -22,18 +23,14 @@ export function formatLots(value: number | null | undefined, meta: Meta | null):
 }
 
 export function formatCandle(candle: Candle | null, meta: Meta | null): string {
-  if (!candle) return "UTC -  O -  H -  L -  C -  V -";
-  return `${formatUTC(candle.timeMs)} UTC  O ${formatPriceTicks(candle.openTicks, meta)}  H ${formatPriceTicks(candle.highTicks, meta)}  L ${formatPriceTicks(candle.lowTicks, meta)}  C ${formatPriceTicks(candle.closeTicks, meta)}  V ${formatLots(candle.volumeLots, meta)}`;
+  if (!candle) return "Local time -  O -  H -  L -  C -  V -";
+  return `${formatLocalTimeWithZone(candle.timeMs)}  O ${formatPriceTicks(candle.openTicks, meta)}  H ${formatPriceTicks(candle.highTicks, meta)}  L ${formatPriceTicks(candle.lowTicks, meta)}  C ${formatPriceTicks(candle.closeTicks, meta)}  V ${formatLots(candle.volumeLots, meta)}`;
 }
 
-export function formatUTC(timeMs: number | null | undefined): string {
-  if (timeMs === null || timeMs === undefined) return "-";
-  return new Date(timeMs).toISOString().slice(11, 19);
-}
+export { formatLocalTime };
 
 export function formatStatusTime(timeMs: number | null | undefined): string {
-  if (timeMs === null || timeMs === undefined) return "-";
-  return `${formatUTC(timeMs)} UTC`;
+  return formatLocalTimeWithZone(timeMs);
 }
 
 export function formatRateFromFlush(flushMs: number | null | undefined): string {

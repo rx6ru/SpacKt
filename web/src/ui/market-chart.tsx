@@ -5,7 +5,7 @@ import { ChevronLeftIcon, ChevronRightIcon, ReloadIcon } from "@radix-ui/react-i
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MarketRuntimeSnapshot } from "../domain/market-view";
 import type { Candle, Interval } from "../domain/model";
-import { formatCandle, formatLots, formatPriceTicks, formatUTC, latestCandle } from "./format";
+import { formatCandle, formatLocalTime, formatLots, formatPriceTicks, latestCandle } from "./format";
 
 type MarketChartProps = {
   snapshot: MarketRuntimeSnapshot;
@@ -174,7 +174,7 @@ export function MarketChart({ snapshot, onSelectInterval }: MarketChartProps) {
         </button>
         <div className="candle-legend">
           <span className="legend-mode">{inspectedCandle ? "Inspecting candle" : "Latest candle"}</span>
-          <LegendCell label="UTC" value={formatUTC(activeCandle?.timeMs)} />
+          <LegendCell label="Local time" value={formatLocalTime(activeCandle?.timeMs)} />
           <LegendCell label="O" value={formatPriceTicks(activeCandle?.openTicks, meta)} />
           <LegendCell label="H" value={formatPriceTicks(activeCandle?.highTicks, meta)} />
           <LegendCell label="L" value={formatPriceTicks(activeCandle?.lowTicks, meta)} />

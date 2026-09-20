@@ -62,6 +62,8 @@ The chart follows the latest candle while you watch the live edge.
 Scroll into history to pause follow, then select **Go Live** to return.
 Scrolling back to the live edge also resumes follow.
 Changing intervals keeps your chosen candle width.
+Trade times, candle details, and chart labels use your browser's local time zone.
+Detailed time labels show the zone. Market timestamps and candle calculations remain in UTC.
 
 The order book starts from a REST snapshot.
 The browser buffers WebSocket ranges while the snapshot is in flight.
@@ -208,3 +210,6 @@ A restart creates a new backend session.
 It does not place real orders, connect to a real exchange, or persist server market data.
 The watchlist contains preview rows, but only `BTC-USD` is live.
 The static frontend must be rebuilt when the backend origin changes.
+The free Render backend can sleep after 15 minutes without inbound traffic.
+The next connection can take about one minute while it starts.
+See [Render's free service limits](https://render.com/docs/free#spinning-down-on-idle).

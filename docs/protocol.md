@@ -20,6 +20,9 @@ All ordering IDs, revisions, and millisecond times must be safe integers in Java
 - `requestId`: browser-issued positive integer identifying one candle subscription generation.
 - `t`: UTC milliseconds since the Unix epoch for market records.
 
+The browser formats visible times in the viewer's local time zone.
+This changes labels only. It does not change `t`, ordering, or candle buckets.
+
 A candle key is `(session, symbol, interval, t)`.
 A higher candle `rev` replaces a lower revision of that key.
 Equal revision with unequal values is invalid data and causes candle resynchronization.
